@@ -301,3 +301,26 @@ commit. Not investigated further.
   time goes, not what a frame costs. The largest such cost is the per-draw
   clamp pass (about 23 ms of GPU at 3,200 indirect draws, by itself over
   16.7 ms). See RESEARCH.md §1 and ROADMAP.md item 2.
+
+## Frame-rate regression report: 0.4 FPS (2026-11-26, open)
+
+- **Reported:** about 0.4 FPS in a title run after today's commits. The
+  first report said black screen; corrected to low FPS.
+- **Not yet reproduced:** there is no title workload here.
+- **Ruled out so far:**
+  - **Multi-group clamp on hardware:** its three budget tests now also run
+    on the RTX 3060 (`card_budget_*`) and pass. The benchmark gives it
+    5–17× less GPU time than before.
+  - **CPU-side changes:** none on a default-config hot path
+    (`changed_chunks` is off by default; BCPack got faster).
+- **Prime explanation, unconfirmed:** a cold shader cache.
+  - The cache key includes `victory_shader::emit::translation_fingerprint()`.
+  - Three shader-translator commits today changed it, so the first run
+    after updating re-translates every shader and recompiles its
+    pipelines. Draws wait on that, within each frame's wait budget.
+  - Expected: slow first run, normal second run. `victory translate --warm all`
+    fills the cache ahead of time.
+- **To isolate the clamp in one build:** `VICTORY_CLAMP=legacy` restores
+  the clamp shader of `29bdaa5` unchanged.
+- **Data needed from a run:** `VICTORY_FRAME_LOG_FILE=<file>` (frame-time
+  readings) with and without `VICTORY_CLAMP=legacy`, after a warm cache.
