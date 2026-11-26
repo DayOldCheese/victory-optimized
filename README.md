@@ -52,3 +52,18 @@ Based on [fxceless/victory-fork](https://github.com/fxceless/victory-fork), itse
 Fixes ported from upstream name their source commit in the commit message and CHANGELOG.md. `crates/victory-formats/src/bcpack-tables.bin` (the BCPack format's constant tables) is inherited from upstream unchanged.
 
 No proprietary game executables, assets, personal logs or screenshots are included. Use only authorised software and test data.
+
+## Desktop GUI
+
+`cargo build --release -p victory-gui`, then run `target\release\victory-gui.exe`:
+- **Dashboard:** build, tests, benchmarks, live CPU/GPU/RAM/VRAM.
+- **Play:** launch or stop a title with the stable, performance or
+  experimental profile; warm the shader cache.
+- **Settings:** each switch with what it does; experimental ones marked.
+- **Diagnostics:** live FPS and frame-time graph from the layer's frame log,
+  errors, console, export.
+- **Git:** changes, history, audit before commit, push only after typing the
+  branch name.
+
+It drives `cargo`, `git` and `victory.exe`; the layer itself is unchanged,
+and the command line works as before.
