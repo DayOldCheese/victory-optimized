@@ -324,3 +324,39 @@ commit. Not investigated further.
   the clamp shader of `29bdaa5` unchanged.
 - **Data needed from a run:** `VICTORY_FRAME_LOG_FILE=<file>` (frame-time
   readings) with and without `VICTORY_CLAMP=legacy`, after a warm cache.
+
+## Upstream integration (branch `upstream-integration`, 2026-11-26)
+
+- **What came in:** upstream `dd3a14b..e4245f3`, 85 commits, verified by
+  `git rev-list --count`: code, docs and CI. Its `diagnostics/` run logs
+  (868k lines of title runs) are left out.
+- **Conflicts, resolved by hand:**
+  - `framelog.rs`: both kept.
+  - `pipeline/make.rs`: upstream's deny list with our per-pipeline
+    condvar.
+  - `watch.rs`: upstream's per-block remap bookkeeping, which is a
+    correctness need; our helper kept for the aliased set.
+  - `valu_tests.rs`: both tests kept.
+- **Silent merge problems found by review, not by git:**
+  1. Upstream's weakened assertion in the budget test came in with a
+     clean merge. Restored to the strict one.
+  2. Upstream's shader features (counted gather tables, dispatches spread
+     past 65,535 groups, compute diagnostics) were dropped except a
+     comment, while its Rust side, which sets their flags, came in. They
+     were ported into this fork's restructured clamp by hand. Upstream's
+     own test `warp_spread_records_split_large_x_and_keep_small_unspread`
+     passes, with all budget tests (WARP and RTX 3060).
+- **Tests:** workspace 0 failures except
+  `xtask policy::repository_passes_policy`. Upstream fails it too: its own
+  `host.rs` (528,954 bytes) and `lower.rs` (535,588) exceed its 512 KiB
+  per-file rule. Documented, not weakened.
+- **Release build:** succeeds.
+- **Profiles (new):** `victory run --profile stable|performance|experimental`
+  sets upstream's measured switch set from one list
+  (`victory-core::profiles`). `scripts/run-fast.ps1` uses it. A test
+  checks that every listed switch is read somewhere in the layer.
+  - Performance adds what upstream measured since the fork base: texture
+    worker, lookup cache, parallel refresh, settle room, and
+    `VICTORY_TEXTURE_BACK=1` (correct water).
+  - Upstream's measured world frame rate with that set: 8.2–9.5 FPS. Not
+    measured here.

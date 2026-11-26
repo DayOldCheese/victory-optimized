@@ -35,7 +35,7 @@ emulator. The two hard parts that have no direct equivalent elsewhere:
 | [Xenia](https://github.com/xenia-project/xenia) | Xbox 360 emulator | BSD-3-Clause | Compatible; ideas for memory watching |
 | [Xodus](https://github.com/xodus-gaming) | Xbox PC / Game Pass titles on Linux (Rust, launched 2026-08) | Not verified | Not until checked |
 | XWine1 ([github.com/xwine1](https://github.com/xwine1)) | Xbox One compatibility layer, not yet public | Unknown | No |
-| "XCL" | Not found under that name | None | Ask for a link |
+| [XCL](https://github.com/ivall/xcl) | Another layer for the same title, used upstream as a behaviour reference (UPSTREAM-CREDITS.md) | GPL-2.0-only | **No code reuse:** GPL-2.0-only cannot be combined into GPL-3.0-or-later. Ideas re-implemented only. |
 
 ## Findings that matter here
 

@@ -104,6 +104,11 @@ enum Command {
         /// Actually start the title. Without it, stop after binding.
         #[arg(long)]
         execute: bool,
+        /// A set of the layer's switches: stable (the defaults), performance
+        /// (upstream's measured set) or experimental (performance plus the
+        /// switches tied to lost cards). Switches already set are kept.
+        #[arg(long, default_value = "stable")]
+        profile: String,
         /// The console model the title sees (device type, memory).
         #[arg(long, value_enum, default_value_t = Console::SeriesX)]
         console: Console,
@@ -180,8 +185,17 @@ fn main() -> Result<()> {
             strict,
             execute,
             console,
+            profile,
             title_args: _,
-        } => run::run(&exe, unimplemented, strict, execute, console),
+        } => {
+            let Some(profile) = victory_core::profiles::Profile::parse(&profile) else {
+                anyhow::bail!("unknown profile {profile:?}: stable, performance or experimental");
+            };
+            for sw in victory_core::profiles::apply(profile) {
+                eprintln!("profile {}: {}={}", profile.name(), sw.var, sw.value);
+            }
+            run::run(&exe, unimplemented, strict, execute, console)
+        }
         Command::Config => show_config(),
     }
 }

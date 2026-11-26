@@ -14,5 +14,14 @@
   VIctory #1122 by tightfall. The read-beside fix for kernel reads into title
   memory is by **Joshua Odom** (commit `10ea38e` of the same fork family). Both
   are carried here unchanged apart from one merge conflict.
+- **[fxceless/victory-fork](https://github.com/fxceless/victory-fork)** is
+  this fork's direct upstream. Its 85 commits after `dd3a14b`, up to
+  `e4245f3` (2026-11-26), are integrated on the `upstream-integration`
+  branch: code, docs and CI, but not its `diagnostics/` run logs. The BC7
+  rotation (`06702fe`), legacy multiply-add (`f6a09d3`) and SDWA
+  sign-extension (`58de9bf`) fixes were first ported on their own. Where
+  this fork's indirect clamp and upstream's both changed, the clamp keeps
+  this fork's record-order budget and carries upstream's counted tables,
+  spread dispatches and compute diagnostics, ported by hand.
 - This fork's changes were developed with [Claude Code](https://claude.com/claude-code).
 
