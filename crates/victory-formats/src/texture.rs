@@ -965,44 +965,108 @@ mod tests {
             },
         ];
         for d in cases {
-            let l = Layout::new(&d).unwrap();
-            let mut seen = vec![false; l.size as usize];
-            let mut tiled = vec![0u8; l.size as usize];
-            let n = d.element_bytes as usize;
-            let slices = if d.dimension == Dimension::Tex3d { 1 } else { d.depth };
-            for slice in 0..slices {
-                for mip in 0..d.mips {
-                    let m = l.mips[mip as usize];
-                    let active = m.width as usize * n;
-                    let row = active + 13;
-                    let plane = row * m.height as usize + 11;
-                    let linear: Vec<u8> = (0..plane * m.depth as usize)
-                        .map(|i| (i * 7 + mip as usize * 13 + slice as usize) as u8)
-                        .collect();
-                    l.tile(&mut tiled, mip, slice, &linear, row, plane).unwrap();
-                    let mut back = vec![0xcc; linear.len()];
-                    l.detile(&tiled, mip, slice, &mut back, row, plane).unwrap();
-                    for z in 0..m.depth {
-                        let base = z as usize * plane;
-                        for y in 0..m.height {
-                            let start = base + y as usize * row;
-                            assert_eq!(back[start..start + active], linear[start..start + active]);
-                            assert!(back[start + active..start + row].iter().all(|&b| b == 0xcc));
-                            for x in 0..m.width {
-                                let at = l.offset(mip, x, y, slice + z).unwrap() as usize;
-                                let source = start + x as usize * n;
-                                assert_eq!(tiled[at..at + n], linear[source..source + n]);
-                                assert!(at + n <= seen.len(), "{d:?} mip {mip} outside");
-                                assert!(at.is_multiple_of(n));
-                                assert!(!seen[at], "{d:?} mip {mip} ({x},{y},{z}) twice");
-                                seen[at] = true;
-                            }
+            round_trip(&d);
+        }
+    }
+
+    /// Every element of every slice and mip of `d` tiles to its own place
+    /// inside the layout, and copies in and out give the bytes back.
+    fn round_trip(d: &Desc) {
+        let l = Layout::new(d).unwrap();
+        let mut seen = vec![false; l.size as usize];
+        let mut tiled = vec![0u8; l.size as usize];
+        let n = d.element_bytes as usize;
+        let slices = if d.dimension == Dimension::Tex3d { 1 } else { d.depth };
+        for slice in 0..slices {
+            for mip in 0..d.mips {
+                let m = l.mips[mip as usize];
+                let active = m.width as usize * n;
+                let row = active + 13;
+                let plane = row * m.height as usize + 11;
+                let linear: Vec<u8> = (0..plane * m.depth as usize)
+                    .map(|i| (i * 7 + mip as usize * 13 + slice as usize) as u8)
+                    .collect();
+                l.tile(&mut tiled, mip, slice, &linear, row, plane).unwrap();
+                let mut back = vec![0xcc; linear.len()];
+                l.detile(&tiled, mip, slice, &mut back, row, plane).unwrap();
+                for z in 0..m.depth {
+                    let base = z as usize * plane;
+                    for y in 0..m.height {
+                        let start = base + y as usize * row;
+                        assert_eq!(back[start..start + active], linear[start..start + active]);
+                        assert!(back[start + active..start + row].iter().all(|&b| b == 0xcc));
+                        for x in 0..m.width {
+                            let at = l.offset(mip, x, y, slice + z).unwrap() as usize;
+                            let source = start + x as usize * n;
+                            assert_eq!(tiled[at..at + n], linear[source..source + n]);
+                            assert!(at + n <= seen.len(), "{d:?} mip {mip} outside");
+                            assert!(at.is_multiple_of(n));
+                            assert!(!seen[at], "{d:?} mip {mip} ({x},{y},{z}) twice");
+                            seen[at] = true;
                         }
-                        assert!(back[base + plane - 11..base + plane].iter().all(|&b| b == 0xcc));
                     }
+                    assert!(back[base + plane - 11..base + plane].iter().all(|&b| b == 0xcc));
                 }
             }
         }
+    }
+
+    /// The same over seeded random descriptions, in every swizzle mode
+    /// (the cases above have none of the XOR, `_T`, Z or R modes), with
+    /// block-compressed elements, odd sizes, whole mip chains, arrays and
+    /// volumes. Descriptions the layout refuses are counted, not checked; the XOR modes
+    /// must refuse copies.
+    #[test]
+    fn random_descriptions_round_trip_in_every_swizzle_mode() {
+        let modes = [0u32, 1, 2, 5, 6, 9, 10, 17, 18, 21, 22, 23, 24, 25, 26, 27];
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move |n: u32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % u64::from(n)) as u32
+        };
+        let (mut checked, mut xor, mut refused) = (std::collections::BTreeMap::new(), std::collections::BTreeMap::new(), 0);
+        for _ in 0..400 {
+            let swizzle = Swizzle(modes[next(modes.len() as u32) as usize]);
+            let block = if next(3) == 0 { 4 } else { 1 };
+            let element_bytes = if block == 4 { [8, 16][next(2) as usize] } else { [1, 2, 4, 8, 16][next(5) as usize] };
+            let (width, height) = (1 + next(300), 1 + next(200));
+            let volume = next(5) == 0;
+            let depth = if volume { 1 + next(12) } else { 1 + next(3) };
+            let most = 32 - width.max(height).max(if volume { depth } else { 1 }).leading_zeros();
+            let d = Desc {
+                dimension: if volume { Dimension::Tex3d } else { Dimension::Tex2d },
+                width,
+                height,
+                depth,
+                mips: 1 + next(most),
+                element_bytes,
+                block,
+                samples: 1,
+                swizzle,
+            };
+            let Ok(l) = Layout::new(&d) else {
+                refused += 1;
+                continue;
+            };
+            if !l.addressable() {
+                // The XOR modes have no addressing yet (see `addressable`):
+                // copies are refused, never made with wrong addresses.
+                let mut tiled = vec![0u8; l.size as usize];
+                assert_eq!(l.tile(&mut tiled, 0, 0, &[0; 16], 16, 16), Err(Error::Unsupported), "{d:?}");
+                assert_eq!(l.offset(0, 0, 0, 0), Err(Error::Unsupported), "{d:?}");
+                *xor.entry(swizzle.0).or_insert(0) += 1;
+                continue;
+            }
+            round_trip(&d);
+            *checked.entry(swizzle.0).or_insert(0) += 1;
+        }
+        // Every mode without pipe or bank XOR is checked; the others refuse.
+        let plain: Vec<u32> = modes.iter().copied().filter(|&m| !Swizzle(m).xor()).collect();
+        assert_eq!(checked.keys().copied().collect::<Vec<_>>(), plain, "modes checked");
+        assert_eq!(xor.len(), modes.len() - plain.len(), "XOR modes seen: {xor:?}");
+        assert!(refused < 100, "{refused} of 400 refused");
     }
 
     #[test]

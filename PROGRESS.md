@@ -197,3 +197,39 @@ two runs each, ns per block:
     one thread per core.
   - Do it only if an authorised run's `dstorage` debug line shows
     `bcpack_workers` near the worker count.
+
+## Textures: layout sweep over every swizzle mode (2026-11-26)
+
+The existing round-trip test covered 10 hand-picked descriptions and none of
+the XOR, `_T`, Z or R modes. New test
+`texture::tests::random_descriptions_round_trip_in_every_swizzle_mode`:
+- 400 seeded descriptions: all 16 modes, BC (4×4, 8/16-byte) and plain
+  elements, odd sizes up to 300×200, whole mip chains, arrays, volumes.
+- Every addressable mode must round-trip with each element at its own
+  address.
+- The XOR modes, which have no addressing yet (a documented shortcut), must
+  refuse copies with `Unsupported` and never place bytes wrongly.
+
+**Result: no layout bug found.** This is a measured negative: the sweep
+passes. It stays as a regression net.
+
+## Gaps measured but not changed (2026-11-26)
+
+- **Indirect draws (GPU sync, the largest measured cost):**
+  - By default every indirect draw gets its own clamp pass: 7.3 µs per
+    draw in `indirect::bench`, about 23 ms of GPU time per frame at that
+    benchmark's 3,200 draws.
+  - Windows (`VICTORY_INDIRECT_WINDOW=1`) are 0.33 µs per draw, 22× less.
+  - They are off upstream because runs with them on lost the device.
+    Validating them needs an authorised title run; see PLAN.md.
+- **Upstream correctness fixes since the fork base (`dd3a14b`):**
+  - BC7 rotation applied only to modes 4–5 (BCPack);
+  - legacy multiply-add as RDNA 2 runs it (`f6a09d3`, lighting maths);
+  - SDWA 16-bit sign extension;
+  - 16-bit and 32-bit integer typed views.
+
+  The first two apply cleanly on their own. The 16-bit views fix also needs
+  changes in `victory-gpu` (descriptor tables, draw, shader cache);
+  importing only its shader half would break rendering, so it was not done.
+  Porting any of them awaits the user's approval (the import step was
+  stopped by the permission system).
