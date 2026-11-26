@@ -360,3 +360,31 @@ commit. Not investigated further.
     `VICTORY_TEXTURE_BACK=1` (correct water).
   - Upstream's measured world frame rate with that set: 8.2–9.5 FPS. Not
     measured here.
+
+## User run report: 0.9 FPS, CPU 75 %, GPU 1 % (2026-11-26, evening)
+
+Reported from the GUI: 0.9 FPS (1,111 ms frames), CPU 75 %, GPU 1 %, VRAM
+8.7 GB, 2.9 GB of 32 GB RAM free.
+
+- **RAM:** upstream's own README (line 706 at `e4245f3`) reports about
+  24 GB in use during play on a 32 GB PC with 1–5 GB free, at 8–9.5 world
+  FPS. Low free RAM alone does not explain a tenfold gap. It is still a
+  risk (paging) and a target (memory mirroring); see below.
+- **CPU busy, GPU idle:** the pattern of shaders and pipelines still being
+  translated and compiled. That happens when the shader cache is cold
+  (the upstream merge changed the translator fingerprint again), and when
+  draws wait for pipelines. Not yet confirmed: the frame log's per-frame
+  breakdown would show it.
+- **Profile:** the GUI starts on the stable profile (all switches off,
+  upstream: 3–6 s a frame). Which profile the run used is not known.
+- **Needed to go further:** one run after `Warm Shader Cache`, on the
+  performance profile, with its diagnostic log exported from the GUI.
+
+### GUI fixed before this report
+
+The Branch field showed "os error 123" when the GUI had no saved
+settings: an empty repository path passed the check because
+`"" + Cargo.toml` resolved against the folder the GUI was started from,
+and git then ran in an empty-named folder. Only an absolute path is now
+accepted. Test: `an_empty_repo_path_is_replaced_by_the_workspace`.
+Verified by a screenshot of the GUI started from `C:\`.
