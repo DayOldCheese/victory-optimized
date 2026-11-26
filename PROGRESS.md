@@ -388,3 +388,69 @@ settings: an empty repository path passed the check because
 and git then ran in an empty-named folder. Only an absolute path is now
 accepted. Test: `an_empty_repo_path_is_replaced_by_the_workspace`.
 Verified by a screenshot of the GUI started from `C:\`.
+
+## Diagnostic log, performance profile, world play (2026-11-26, 18:07–18:09)
+
+The user exported a GUI diagnostic log: about 110 s of world frames on the performance profile. The game itself was not run or inspected here. Everything below comes from the layer's own frame log.
+
+### Summary: the card is now the limit, not the CPU
+
+| measure | usual frame | long frames |
+|---|---|---|
+| frame time (median) | 166–300 ms (3–6 FPS) | 330–800 ms |
+| card busy (direct queue, own clock) | 92–100 % | gaps of 20–240 ms |
+| card time of our lists per frame | 180–290 ms | — |
+| of it the title's own lists | 100–200 ms | 200–550 ms |
+| of it our send-and-hash and compare lists | 30–45 ms | 60–160 ms |
+| submit thread preparing | 70–110 ms | 100–235 ms |
+| submit thread waiting for the card | 0 ms | 120–285 ms |
+
+The GPU-idle pattern of the earlier 0.9 FPS report is gone. With the performance profile and a warm cache ("pipelines: 0 made"), the card is about 95 % busy. The frame now waits on card time, and only the long frames add CPU waits.
+
+### Bottlenecks, largest first
+
+1. **Our per-indirect-command clamps serialize the card.** Each frame has 4,000–11,000 indirect commands bounded. Each one is our clamp dispatch between two UAV barriers, each barrier a wait for every earlier shader write. That is up to about 20,000 full-pipeline drains a frame. At 5–10 µs each, that is 50–200 ms of card time, the same size as the gap to console speed. The two remedies the layer already has were both off in this run:
+   - `VICTORY_CLAMP_LEAN=1` drops the second wait (argued exact in `indirect.rs`, `clamp_lean`);
+   - the experimental `VICTORY_INDIRECT_WINDOW` / `VICTORY_INDIRECT_GATHER` batch the clamps per list. The log shows "0 read from a window", so they were not active.
+
+   This is the first thing to measure.
+2. **Our card-copy hashing costs 15–20 % of card time.** Send-and-hash and compare lists take 30–45 ms a frame. Each frame sends 70–110 MB up in about 2,000–3,000 ranges, compares about 11,000–18,000 pieces on the card and fetches 1,100–2,300 pieces back. This comes from `CARD_BUFFERS_MB` and `CARD_REHASH_RUNS` in the performance profile. Fewer, larger runs, or skipping the compare for ranges the write watch reports as clean, would cut it.
+3. **Memory is at its limit.**
+   - The process holds 24.2–24.7 GB private.
+   - The PC has 2.4–3.1 GB free and **only 300–1,250 MB left to commit**.
+   - VRAM is at 9.6 of 10.8 GB.
+   - 600–700 textures show no level (black) for lack of room.
+   - One frame had 184,000 page faults.
+
+   A commit failure would crash the run. Paging explains some of the long frames. Upload buffers are churned: 49→56 GB made so far.
+4. **Dynamic descriptor slots ran out (a correctness problem).** At 18:08:33–36 the fewest free slots fell to 30 of 262,144. Tables were refused, and draws and indirect commands were dropped: "no free dynamic slots", plus "indirect kind 0/1/2/10: prepare failed", up to 377 a frame. This is visible as missing geometry. The ring needs to be larger, or released sooner.
+5. **CPU preparation, 70–110 ms a frame on the submit thread:**
+   - write-watch askings 15–40 ms;
+   - list steps 30–65 ms;
+   - refreshes 12–38 ms.
+
+   On the recording threads:
+   - making descriptor tables takes 70–160 ms a frame (summed over all six threads);
+   - waits for the `HostHeap::mirror` lock take 45–80 ms a frame;
+   - a third of the tables repeat one made earlier in the same list. The counter in `draw.rs` names this "a table cache within a list would serve these".
+
+   This runs alongside the card, so it matters once item 1 is fixed.
+6. **Long frames: synchronous waits.**
+   - The submit thread waits 120–285 ms for the card on "a synchronous submission or present".
+   - The present call spends 100–420 ms in "lines and settling".
+   - Fence signals land 1.2–1.3 frames (200–450 ms) after the title's Signal.
+
+   The title pipelines about one frame ahead. A frame that waits for the card in full then doubles.
+
+### Not the cause in this run
+
+- Pipeline creation: 0 made or loaded in every frame.
+- DirectStorage: slowest request under 155 ms, none over 250 ms.
+- Slow cores: 0 found.
+- Texture-refresh waits for memory: 0.
+
+### Next measurement (the user can run this; no build change is needed)
+
+1. `VICTORY_CLAMP_LEAN=alt` on the performance profile. It switches every 20 s and says so in the log. Compare the `cardmeter` "a list of ours running" lines and the frame times between the halves.
+2. Then the experimental profile, which adds the indirect window and gather. Check that the "read from a window" and "read a record gathered" counts become non-zero, and compare card time.
+3. If the card time drops, make the winner part of the performance profile.
