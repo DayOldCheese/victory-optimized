@@ -1654,3 +1654,26 @@ fn legacy_mad_fuses_its_product_and_flushes_its_sources() {
         assert_eq!(got, want[i], "{backend}: case {i}");
     });
 }
+
+/// SDWA `dst_unused` on a 16-bit result written to WORD_0: SEXT (1) copies
+/// bit 15 up through the high word; PAD (0) zeroes it. Upstream VIctory
+/// #3124: a 16-bit -1 written with SEXT came out as 0x0000FFFF.
+#[test]
+fn sdwa_word0_sext_extends_a_16_bit_result() {
+    // VOP1 v_cvt_i16_f16 (0x53) v0, v1 through an SDWA dword: src0 v1
+    // (bit 23 clear: a VGPR), dst_sel WORD_0 (4), src0_sel DWORD (6).
+    let sdwa = |dst_unused: u32| [vop1(0x53, 0, 0xF9), 1 | 4 << 8 | dst_unused << 11 | 6 << 16];
+    let sext = build_valu_cs(&sdwa(1));
+    let pad = build_valu_cs(&sdwa(0));
+    // -1.0, -123.75, +123.75 as f16.
+    let cases: [(u32, i16); 3] = [(0xBC00, -1), (0xD7BC, -123), (0x57BC, 123)];
+    let input: Vec<[u32; 4]> = cases.iter().map(|&(x, _)| [x, 0, 0, 0]).collect();
+    run_cases(&sext, &input, |backend, i, _, got| {
+        let want = i32::from(cases[i].1) as u32;
+        assert_eq!(got, want, "{backend}: SEXT case {i}: {got:#010x}, want {want:#010x}");
+    });
+    run_cases(&pad, &input, |backend, i, _, got| {
+        let want = u32::from(cases[i].1 as u16);
+        assert_eq!(got, want, "{backend}: PAD case {i}: {got:#010x}, want {want:#010x}");
+    });
+}
