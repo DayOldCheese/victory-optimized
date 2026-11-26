@@ -21,6 +21,8 @@ pub enum State {
 /// A running or finished child process and what it printed.
 pub struct Job {
     pub name: String,
+    /// When it was started.
+    pub began: std::time::Instant,
     output: Arc<Mutex<Lines>>,
     state: Arc<Mutex<State>>,
     child: Arc<Mutex<Option<Child>>>,
@@ -112,7 +114,7 @@ impl Job {
                 *state.lock().unwrap() = State::NotStarted(e.to_string());
             }
         }
-        Job { name: name.to_owned(), output, state, child }
+        Job { name: name.to_owned(), began: std::time::Instant::now(), output, state, child }
     }
 
     pub fn state(&self) -> State {
@@ -205,7 +207,7 @@ mod tests {
         for i in 0..KEEP + 5 {
             push(&out, i.to_string());
         }
-        let job = Job { name: String::new(), output: Arc::new(out), state: Arc::new(Mutex::new(State::Running)), child: Arc::new(Mutex::new(None)) };
+        let job = Job { name: String::new(), began: std::time::Instant::now(), output: Arc::new(out), state: Arc::new(Mutex::new(State::Running)), child: Arc::new(Mutex::new(None)) };
         let (l, end) = job.lines_from(0);
         assert_eq!((l.len(), l[0].as_str(), end), (KEEP, "5", KEEP + 5));
         let (l, end2) = job.lines_from(KEEP + 3);

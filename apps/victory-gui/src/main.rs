@@ -11,6 +11,7 @@ mod export;
 mod frames;
 mod git;
 mod jobs;
+mod progress;
 mod settings;
 mod sysinfo;
 
@@ -259,6 +260,47 @@ fn state_text(st: &Option<State>) -> (Color32, String) {
     }
 }
 
+/// A task's name and state, its progress bar when it prints one
+/// ([`progress`]), how long it has run, and its last line.
+fn task_status(ui: &mut egui::Ui, t: &Job) {
+    let state = t.state();
+    let lines = t.lines();
+    let elapsed = t.began.elapsed().as_secs_f64();
+    let (c, s) = state_text(&Some(state.clone()));
+    let running = matches!(state, jobs::State::Running);
+    let time = if running { format!("running for {}", progress::duration(elapsed)) } else { s.to_string() };
+    ui.label(RichText::new(format!("{}: {time}", t.name)).color(c).strong());
+    if let Some(p) = progress::latest(&lines) {
+        let text = match (p.total, p.left_s(elapsed)) {
+            (Some(total), Some(left)) if running => format!("{} of {total} {}, about {} left", p.done, p.what, progress::duration(left)),
+            (Some(total), _) => format!("{} of {total} {}", p.done, p.what),
+            (None, _) => format!("{} {} so far", p.done, p.what),
+        };
+        match p.fraction() {
+            Some(f) => {
+                ui.add(egui::ProgressBar::new(f).text(text).show_percentage());
+            }
+            None => {
+                ui.add(egui::ProgressBar::new(0.0).text(text).animate(running));
+            }
+        }
+    } else if running {
+        ui.add(egui::ProgressBar::new(0.0).text("starting...").animate(true));
+    }
+    match state {
+        jobs::State::Succeeded => {
+            ui.label(RichText::new("Finished.").color(GOOD));
+        }
+        jobs::State::Failed(_) | jobs::State::NotStarted(_) => {
+            ui.label(RichText::new("Did not finish: its last lines are in Diagnostics.").color(BAD));
+        }
+        jobs::State::Running => {}
+    }
+    if let Some(l) = lines.iter().rev().find(|l| !l.starts_with("[exit code")) {
+        ui.label(RichText::new(l).small().monospace());
+    }
+}
+
 /// A line graph of `values` in a box `h` high, scaled to `max`.
 fn graph(ui: &mut egui::Ui, values: &[f64], max: f64, h: f32, color: Color32, marks: &[(f64, &str)]) {
     let w = ui.available_width();
@@ -379,11 +421,7 @@ impl App {
                 }
             });
             if let Some(t) = &self.task {
-                let (c, s) = state_text(&Some(t.state()));
-                ui.label(RichText::new(format!("{}: {s}", t.name)).color(c));
-                if let Some(l) = t.lines().last() {
-                    ui.label(RichText::new(l).small().monospace());
-                }
+                task_status(ui, t);
             }
 
             let ui = &mut cols[1];
@@ -480,6 +518,10 @@ impl App {
                 self.start_task("Warm pipelines", &exe, &["warm", "--used"]);
             }
         });
+        // (the shader and pipeline tasks are started here: their progress is shown here too)
+        if let Some(t) = &self.task {
+            task_status(ui, t);
+        }
         if let Some(g) = &self.game {
             let (c, s) = state_text(&Some(g.state()));
             ui.label(RichText::new(format!("Title: {s}")).color(c));
