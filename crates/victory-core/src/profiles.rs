@@ -49,6 +49,11 @@ pub const PLAY: &[Switch] = &[
     s("VICTORY_THIN", "1", "List calls are written down on the title's threads and translated by eight of ours."),
     s("VICTORY_JOIN_PARTS", "8", "Up to eight parts of a submission joined into one."),
     s("VICTORY_UPLOAD_AHEAD", "1", "Uploads are prepared ahead of the submission that needs them."),
+    // Not in play.ps1: on here so that Warm Pipelines (`victory warm --used`) has
+    // the pipelines to make. On the RTX 3060 the driver took 5.6 s for each slow
+    // one and ~1,700 were still queued after 5 minutes of play (two runs,
+    // 2026-11-26): made in the title they cost the world its frames.
+    s("VICTORY_PIPELINE_BOOK", "1", "The pipelines the title creates are written down (in the cache folder), for Warm Pipelines to make ahead of a run."),
 ];
 
 /// What "safe" adds (`play.ps1 -Safe`): the newer ways left out.

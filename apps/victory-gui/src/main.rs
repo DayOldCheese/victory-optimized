@@ -551,7 +551,7 @@ impl App {
             ui.add_space(12.0);
             ui.heading("Graphics and debugging");
             ui.label("Only what the layer reads. Debug options slow a run down and are for finding faults.");
-            let extra: [(&str, &str, &str, bool); 11] = [
+            let extra: [(&str, &str, &str, bool); 10] = [
                 ("VICTORY_PORT_CONSTANTS", "1", "Renderer patch 1: the title's constants heap read by the card where the title writes it (README). Off by default while tested.", true),
                 ("VICTORY_PORT_DESCRIPTORS", "1", "Renderer patch 2: descriptor-table stores report their slots instead of a scan a frame (README). Off by default while tested.", true),
                 ("VICTORY_PORT_CBV", "1", "Renderer patch 5: shaders read constant buffers in place (README: -4.7 ms). Off by default while tested.", true),
@@ -560,7 +560,6 @@ impl App {
                 ("VICTORY_FRAME_INTERVAL_MS", "16.667", "Lets the title go above 30 fps; its clock stays right (README).", false),
                 ("VICTORY_OUTPUT", "1920x1080", "The title renders to 1080p itself: about 16 ms less card time, a softer picture (README).", false),
                 ("VICTORY_PANEL", "1", "The layer's own panel over the picture: frame times and their parts.", false),
-                ("VICTORY_PIPELINE_BOOK", "1", "Writes down the pipelines the title makes, for Warm Pipelines to make ahead next time.", false),
                 ("VICTORY_D3D12_DEBUG", "1", "Debugging: Direct3D's debug layer (much slower).", false),
                 ("VICTORY_GPU_TIMING", "1", "Debugging: each list timed on its own, slow ones logged.", false),
             ];
