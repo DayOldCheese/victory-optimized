@@ -1,0 +1,147 @@
+# Progress
+
+Engineering log for VIctory Optimized. Measurements are from the
+contributor's machine (Ryzen 5 5600X, RTX 3060 12 GB, Windows 11) unless a
+line says otherwise. Nothing here is estimated: every number has the command
+that produced it.
+
+## Provenance of the six earlier patches
+
+The repository holds one commit. Diffing it against upstream
+(`fxceless/victory-fork`) found the base commit `dd3a14b` (2026-11-25,
+"README: a frame capture built into the layer…"): 6 files, +173 / −29 lines.
+
+| Patch | Where | Review |
+|---|---|---|
+| Memory comparison fast path | `shadow.rs` `changed_chunks` | Correct. Only used with `VICTORY_COPY_CHANGED=1` (off by default). The full-span `==` runs before the chunk loop, so when anything differs, the span up to the first difference is compared twice. The fast path only helps the all-equal case. **Open: not yet benchmarked for the changed case.** |
+| Remap temporary allocations | `watch.rs` `remove_blocks` | Correct. Saves an allocation for 0–1 block ranges only. |
+| Texture queue | `descriptor/host.rs` `TextureQueue::due` | Correct; has a test comparing against the full ordering. |
+| Submission range merging | `host.rs` `join_ranges` | Correct; compacts in place. |
+| Pipeline completion | `pipeline/make.rs` | Correct. A per-pipeline condvar replaces a global one, so a waiter no longer wakes for every other pipeline that finishes. |
+| Frame diagnostics | `framelog.rs` | Correct. `VICTORY_FRAME_LOG_FILE` appends each reading. |
+
+None of the six touches `indirect.rs` or `inplace.rs`: both unstable tests
+below are inherited from upstream.
+
+## Stability investigation (concluded 2026-11-26)
+
+Baseline before any change, `cargo test --locked -p victory-gpu --release`:
+188 passed in most runs. A loop over the test binary showed three separate
+problems, not two.
+
+### 1. `indirect::tests::warp_budget_saturates_without_wraparound_and_preserves_draw_fields`: fixed (implementation defect)
+
+- **Symptom:** fails 36/40 run alone, about 1/25 inside the suite.
+- **Cause:** the argument-clamp shader charged the list's budget once per
+  64-thread group, each group by compare-and-swap when it ran. Once the
+  budget ran out, the records that kept it belonged to whichever group the
+  device happened to run first. The test has 128 records, two groups; on
+  WARP the second group usually wins, so records 64 and 65 were kept
+  instead of 1 and 2. This is a real defect, not a test problem: under
+  budget saturation, which draws survive could change from frame to frame.
+- **Upstream:** upstream hit the same failure ("another two in five runs of
+  seven") and relaxed the assertion to accept any two draws. Not done here.
+- **Fix:** `indirect.rs`, clamp shader.
+  - Dispatches of 64 records or fewer (one group) are unchanged: one read
+    and one compare-and-swap.
+  - Larger dispatches use a scheme where no group waits for another:
+    1. Each group stores its records as fitting.
+    2. It adds its cost sum to budget word 3, sets word 4 if that sum
+       crosses the budget, and arrives at word 5.
+    3. The last group to arrive is the only one that reads or writes the
+       budget word. If everything fits, it adds the total. If not, it walks
+       the records in order and empties every record from the first one
+       that does not fit.
+  - The result equals clamping records one at a time, in order.
+  - Words 3–5 are reset by the last group.
+  - `dst_args` is `globallycoherent` so the emptying stores land after the
+    other groups' stores.
+- **Evidence:**
+  - The original test: 0/200 failures alone, 0/100 for the three budget
+    tests together.
+  - New test `warp_budget_goes_to_the_first_records_across_groups` (41
+    groups, partly spent budget, zero-cost records past the cut-off): fails
+    20/20 against the old shader, passes with the new one.
+  - New test `warp_budget_that_fits_adds_every_group_once` (6 groups, exact
+    total).
+- **Performance** (`cargo test -p victory-gpu --release --lib indirect::bench -- --ignored --nocapture`, three runs each, GPU ms per frame of 3,200 draws):
+
+  | Case | Before | First version | Final |
+  |---|---|---|---|
+  | one at a time, budget in mapped memory | 24.5–25.5 | 34.8–37.2 (+45 %) | 24.6–25.1 |
+  | windows of 32, mapped | 1.04–1.05 | 1.27–1.28 | 1.05–1.06 |
+  | one at a time, budget on the card | 20.9–21.5 | 22.7–24.5 | 21.1–21.4 |
+  | windows of 32, card | 0.94–0.95 | 0.89–0.90 | 0.94–0.95 |
+
+  The first version charged single-group dispatches with the multi-group
+  scheme: about seven atomics plus device barriers each, against two. The
+  final version keeps the old single-group path, so this benchmark (only
+  single-group dispatches) shows no change, within noise. The multi-group
+  path, used by gathers (up to 4,096 records) and large counted executions,
+  has no benchmark yet. **Open.**
+
+### 2. `inplace::tests::warp_a_title_buffer_in_place_shows_its_bytes_at_its_offset`: fixed (timing assumption in the test)
+
+- **Symptom:** 0/50 alone, about 2/10 inside the suite.
+  `VirtualFree(MEM_DECOMMIT)` returns 0.
+- **Cause, measured with a temporary probe:** after the opened heap's
+  reference count reached zero, decommit was refused with error 87 (pages
+  still locked) for about 12 ms in 3 of 12 suite runs. The runtime/WARP
+  lets go of the pages asynchronously after the last release.
+- **Fix:** the test still requires the decommit to succeed, but waits up to
+  2 s for the release (retrying only on error 87) and fails with the error
+  and time waited otherwise.
+- **Production note:** in-place windows are off by default
+  (`VICTORY_INPLACE`). With them on, a title decommit right after a window
+  is let go could fail the same way. This is already documented as a
+  shortcut in `inplace.rs`; **open.**
+
+### 3. Access violation inside `d3d10warp.dll`: unresolved, pre-existing
+
+- **Symptom:** the test process dies with `0xC0000005` (bash exit code 139)
+  and prints no failure line, so pass/fail counts alone do not show it.
+- **Rate:**
+  - Original code: 9/40 full-suite runs.
+  - With the fixes above: 3/40, 3/30, 6/20 in different batches (same
+    order of magnitude; the batches are too small to say the rate changed).
+  - Serial (`--test-threads=1`): 0/15.
+- **Where:**
+  - A temporary unhandled-exception filter (removed) caught a *write* fault
+    at `d3d10warp.dll+0xa842f` (another at `+0xa89b3`) on a WARP thread-pool
+    thread, with no frames of ours on that stack.
+  - Tests in flight at both recorded crashes:
+    - `indirect::tests::warp_count_buffer_ignores_garbage_tail_and_preserves_source`
+    - `queue2::tests::warp_a_fetch_through_the_copy_queue_brings_what_the_direct_queue_brings`
+    - `spread::tests::this_process_has_threads_and_they_have_masks`
+    - `watch::mapping_tests::reads_in_place_and_remappings_wait_for_each_other`
+- **Reproduction:**
+  - `queue2::tests::warp` alone (5 tests that use copy queues, cross-queue
+    fence waits and leaked per-test `Second` lane threads): 3/60.
+  - Any single queue2 test: 0/60.
+  - Any pair: 0/40 each.
+  - Leave-one-out: 0–1/60.
+  - It needs several multi-queue tests at once on the one process-wide WARP
+    device.
+- **Not yet known:** whether this is a WARP bug or a use-after-free of
+  ours (a GPU write into memory a finished test released). Reading the
+  queue2 tests found no early release (each drains with `land()`).
+- **Next step, when time is given:** a WinDbg/cdb session with a full dump
+  of one crash, to name the destination buffer. This needs the Windows
+  debugger installed (your approval). Until then, a run only counts as
+  passing if the binary exits 0. Tests are not serialised to hide it.
+
+### Baseline now
+
+Every suite run that completes: **190 passed, 0 failed, 6 ignored**. The
+two added tests are new; 188 + 2. Plus problem 3 above: some runs crash
+instead of completing.
+
+`cargo build --locked --release -p victory --features diagnostics`:
+succeeds.
+
+## Next
+
+Performance profiling and rendering correctness (see the user's direction
+of 2026-11-26): memory management, GPU use, textures, lighting. Measured
+with authorised fixtures only (the crate's own synthetic GPU benchmarks,
+WARP and host-GPU tests); no title files.

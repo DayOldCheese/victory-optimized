@@ -1384,9 +1384,41 @@ mod tests {
             assert!(same((start + 16) as *const u8, &[0xa5; 64]), "the GPU's write is at the title's address");
             drop(placed);
             // Half of it decommitted: turned down, the host not asked.
-            assert_ne!(mem::VirtualFree(base.add(2 * K64).cast(), K64, mem::MEM_DECOMMIT), 0);
+            // The host lets go of an opened heap's pages after its last
+            // release, not at it: on the software device, with the other
+            // tests running beside this one, the decommit was refused
+            // (error 87, the pages still locked) for about 12 ms after the
+            // heap's count reached zero, in 3 runs of 12. So the decommit
+            // must succeed, but within a deadline, not at once.
+            if let Err((error, waited)) = decommit_once_let_go(base.add(2 * K64), K64) {
+                panic!("the pages were never let go: error {error} after {waited:?}");
+            }
             assert!(matches!(place_part(&device, start, len), Err(None)));
             mem::VirtualFree(base.cast(), 0, mem::MEM_RELEASE);
+        }
+    }
+
+    /// Decommits `[at, at + len)` once the host has let go of the pages of a
+    /// heap opened on them and released: at once, or retried until the
+    /// host does, for at most two seconds. The last refusal's error and the
+    /// time waited if it never does.
+    ///
+    /// # Safety
+    /// `[at, at + len)` is committed memory of the caller's own.
+    unsafe fn decommit_once_let_go(at: *mut u8, len: usize) -> Result<(), (u32, std::time::Duration)> {
+        let started = std::time::Instant::now();
+        loop {
+            // SAFETY: the caller's own memory.
+            if unsafe { mem::VirtualFree(at.cast(), len, mem::MEM_DECOMMIT) } != 0 {
+                return Ok(());
+            }
+            // SAFETY: no arguments.
+            let error = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+            // Only a refusal because the pages are still locked is waited out.
+            if error != windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER || started.elapsed().as_secs() >= 2 {
+                return Err((error, started.elapsed()));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
     }
 
