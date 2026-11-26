@@ -95,6 +95,9 @@ groupshared uint all_asked;
 // the records must be walked.
 groupshared uint finish;
 groupshared uint walk_at;
+// The budget spent before this dispatch, as every group reads it (only the
+// last group writes it, after all have arrived).
+groupshared uint spent_before;
 
 // Where record `index` lies in the source.
 uint source_of(uint index) {
@@ -189,6 +192,11 @@ void main(uint3 id : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
         clamped(id.x, ahead, cost, asked, draw_counts, groups);
     }
     costs[gi] = cost;
+    if (gi == 0 && records > 64u) {
+        uint before;
+        budget.InterlockedOr(0, 0u, before);
+        spent_before = before;
+    }
     GroupMemoryBarrierWithGroupSync();
     if (active && kind > 2) {
         // Diagnostics, in the budget buffer's next words (below): the
@@ -259,6 +267,16 @@ void main(uint3 id : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
         return;
     }
     // Every record as fitting; the last group empties the ones that do not.
+    // With the budget spent before the dispatch, every record that costs
+    // anything runs empty: each group empties its own, adds nothing, and
+    // the last group need not walk (once a list's budget ran out, every
+    // later clamp of it walked all its records: 0.22 ms a clamp of 4,096,
+    // `bench_multi_group_clamps`).
+    bool spent = spent_before >= BUDGET;
+    if (spent && cost > 0) {
+        draw_counts = uint2(0, 0);
+        groups = uint3(0, 0, 0);
+    }
     if (active) {
         uint src_at = source_of(id.x);
         if (kind <= 1) {
@@ -286,7 +304,7 @@ void main(uint3 id : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
             budget.InterlockedAdd(8, all_asked, was);
         }
         uint sum = 0;
-        for (uint j = 0; j < n; j++) {
+        for (uint j = 0; j < n && !spent; j++) {
             sum = min(sum + costs[j], OVER);
         }
         if (sum > 0) {
@@ -311,7 +329,9 @@ void main(uint3 id : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
             budget.InterlockedExchange(20, 0u, was);
             budget.InterlockedOr(0, 0u, base);
             f = 1;
-            if (over != 0 || base > BUDGET || BUDGET - base < total) {
+            if (base >= BUDGET) {
+                // Spent before: the groups emptied their records already.
+            } else if (over != 0 || BUDGET - base < total) {
                 f = 2;
                 walk_at = base;
             } else if (total > 0) {
@@ -1095,13 +1115,26 @@ void main() {
 
     impl WarpHarness {
         fn new() -> Option<Self> {
-            // SAFETY: plain DXGI WARP query and D3D12 test harness setup.
+            Self::with(false)
+        }
+
+        /// The same harness on the first hardware adapter (for measurements).
+        fn on_card() -> Option<Self> {
+            Self::with(true)
+        }
+
+        fn with(card: bool) -> Option<Self> {
+            // SAFETY: plain DXGI adapter query and D3D12 test harness setup.
             unsafe {
                 let factory: IDXGIFactory4 =
                     CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0)).ok()?;
-                let adapter: IDXGIAdapter = factory.EnumWarpAdapter().ok()?;
+                let adapter: IDXGIAdapter = if card {
+                    factory.EnumAdapters1(0).ok()?.cast().ok()?
+                } else {
+                    factory.EnumWarpAdapter().ok()?
+                };
                 let desc = adapter.cast::<IDXGIAdapter1>().ok()?.GetDesc1().ok()?;
-                if desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 == 0 {
+                if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0) == card {
                     return None;
                 }
                 let mut device: Option<ID3D12Device> = None;
@@ -1987,6 +2020,66 @@ void main() {
         assert_eq!((kept, zeroed), (2, (RECORDS as usize) - 2));
     }
 
+    /// GPU cost of multi-group clamps: lists of 200 clamps of `n` indexed
+    /// records each, on the hardware adapter, this tree's shader against the
+    /// one at `VICTORY_CLAMP_BASELINE` (a file holding an earlier `SOURCE`),
+    /// budget on the card. Milliseconds per list, best of five, from submit
+    /// to the fence (the same submission overhead for both).
+    #[test]
+    #[ignore = "a measurement on the card: VICTORY_CLAMP_BASELINE=<file> ... --ignored --nocapture"]
+    fn bench_multi_group_clamps() {
+        let Some(mut card) = WarpHarness::on_card() else {
+            eprintln!("no hardware adapter; skipped");
+            return;
+        };
+        let baseline = std::env::var_os("VICTORY_CLAMP_BASELINE").and_then(|p| std::fs::read_to_string(p).ok());
+        let mut shaders = vec![("this tree", make_for(&card.device).expect("our clamp"))];
+        if let Some(src) = &baseline {
+            shaders.push(("baseline", make_from(&card.device, src).expect("the baseline clamp")));
+        }
+        const STRIDE: u32 = 20;
+        const CLAMPS: u32 = 200;
+        for n in [65u32, 1024, 4096] {
+            for saturated in [false, true] {
+                let bytes = u64::from(STRIDE * n);
+                let (src, src_ptr, _) = card.shared_buffer(bytes);
+                let dst = card.default_uav(bytes);
+                let budget = card.default_uav(256);
+                // SAFETY: a live buffer.
+                let budget_gpu = unsafe { budget.GetGPUVirtualAddress() };
+                // Indexed draws of 3 indices; saturated: 2^20 each (128 fit).
+                let count = if saturated { 1u32 << 10 } else { 3 };
+                // SAFETY: the mapping holds the records.
+                unsafe {
+                    for i in 0..n as usize {
+                        for (w, v) in [count, count, 0, 0, 0].into_iter().enumerate() {
+                            src_ptr.cast::<u32>().add(i * 5 + w).write_volatile(v);
+                        }
+                    }
+                }
+                let mut line = format!("{n:>5} records{}:", if saturated { ", budget runs out" } else { "" });
+                for (name, clamp) in &shaders {
+                    let best = (0..5)
+                        .map(|_| {
+                            let mut state = D3D12_RESOURCE_STATE_COMMON;
+                            for _ in 0..CLAMPS {
+                                assert!(record_clamp_as(clamp, &card.list, (&dst, state), budget_gpu, (&src, 0), None, (1, STRIDE, n), false));
+                                state = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+                            }
+                            // SAFETY: an open list; back to common for the next list.
+                            unsafe { card.list.ResourceBarrier(&[transition(&dst, state, D3D12_RESOURCE_STATE_COMMON)]) };
+                            let started = std::time::Instant::now();
+                            card.submit_and_wait();
+                            started.elapsed().as_secs_f64() * 1e3
+                        })
+                        .fold(f64::INFINITY, f64::min);
+                    line += &format!("  {name} {best:.3} ms");
+                }
+                eprintln!("{line}");
+            }
+        }
+    }
+
     /// The records that keep the budget are the first ones in record order
     /// across many groups, from a budget already partly spent, whatever
     /// order the device runs the groups in; records that cost nothing are
@@ -2068,6 +2161,17 @@ void main() {
                 }
             }
             assert_eq!(paid, 100);
+        }
+
+        // Spent before the dispatch: every record that costs anything runs
+        // empty, the free ones are kept, and the budget stays spent.
+        let (words, out) = run(BUDGET_CAP);
+        assert_eq!(words[0], BUDGET_CAP);
+        assert_eq!(words[3..6], [0, 0, 0], "the dispatch's own words are zero after it");
+        for i in 0..RECORDS as usize {
+            let want = if free(i) { [0, 7] } else { [0, 0] };
+            assert_eq!(out[i * 5..i * 5 + 2], want, "record {i} with the budget spent before");
+            assert_eq!(out[i * 5 + 2..i * 5 + 5], [i as u32, 0, 9000 + i as u32]);
         }
     }
 

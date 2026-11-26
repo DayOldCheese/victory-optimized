@@ -233,3 +233,53 @@ passes. It stays as a regression net.
   importing only its shader half would break rendering, so it was not done.
   Porting any of them awaits the user's approval (the import step was
   stopped by the permission system).
+
+## Release sprint (2026-11-26 evening)
+
+### Correctness ports from upstream (fxceless/victory-fork, GPL-3.0-or-later)
+
+Each is its own commit naming the upstream commit, and each test was shown
+to fail without its fix.
+
+| Fix | Upstream | Test |
+|---|---|---|
+| BCPack: BC7 rotation only in modes 4–5 (other modes swapped colour channels) | `06702fe` | `bc7_rotation_applies_only_to_modes_4_and_5` (upstream's) |
+| Legacy multiply-add fused as on RDNA 2; a zero factor makes the product +0 (lighting maths) | `f6a09d3` | `legacy_mad_fuses_its_product_and_flushes_its_sources` (upstream's) |
+| SDWA WORD_0 SEXT sign-extends 16-bit results (VIctory #3124) | `58de9bf` (hunk only) | `sdwa_word0_sext_extends_a_16_bit_result` (ours; on the RTX 3060 without the fix: `0x0000ffff`, want `0xffffffff`) |
+
+**Not ported:** 16-bit values through typed views (`half_views`, same
+upstream commit). It spans 23 files in `victory-shader` and `victory-gpu`
+(+1,884 lines); half of it would break rendering.
+
+### Multi-group indirect clamps, measured
+
+New bench: `VICTORY_CLAMP_BASELINE=<file> cargo test -p victory-gpu --release --lib bench_multi_group_clamps -- --ignored --nocapture`.
+It records 200 clamps a list on the RTX 3060, budget on the card, ms per
+list, best of 5, two runs. The baseline is the shader of commit `29bdaa5`,
+extracted to a file.
+
+| Records per clamp | Baseline | Last-group scheme | + spent-budget fast path |
+|---|---|---|---|
+| 65 | 1.34–1.44 | 0.81–0.87 | 1.00–1.07 |
+| 65, budget runs out | 0.86–0.94 | 2.21–2.37 | 0.64–0.69 |
+| 1,024 | 4.52–4.89 | 0.71–0.77 | 0.89–0.97 |
+| 1,024, budget runs out | 0.77–0.85 | 11.5–11.7 | 0.53–0.58 |
+| 4,096 | 16.6–17.4 | 0.78–0.80 | 0.95–1.01 |
+| 4,096, budget runs out | 0.86–0.88 | 44.1 | 0.62–0.62 |
+
+- **Before the fast path:** after a list's budget ran out, every later
+  clamp repeated the in-order walk.
+- **The fast path:** each group reads the budget first (only the last
+  group writes it). If it was already spent, the group empties its own
+  costly records and the walk is skipped. Test:
+  `warp_budget_goes_to_the_first_records_across_groups`, budget spent
+  before the dispatch.
+- **Measured:** 5–17× less GPU time for fitting multi-group clamps, about
+  30 % less when the budget is spent. These run in the default
+  configuration for counted `ExecuteIndirect` calls over 64 records.
+
+### Rare test failure observed, unresolved
+
+`watch::tests::a_write_is_reported_at_every_checked_view` failed once in 38
+suite runs and not in 30 more. `watch.rs` is unchanged since the initial
+commit. Not investigated further.
