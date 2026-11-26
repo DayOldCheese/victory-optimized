@@ -7,6 +7,7 @@
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 
 mod dialog;
+mod export;
 mod frames;
 mod git;
 mod jobs;
@@ -658,10 +659,15 @@ impl App {
             ui.separator();
             ui.label("Filter");
             ui.add(egui::TextEdit::singleline(&mut self.console_filter).desired_width(200.0));
-            if ui.button("Export diagnostic log...").clicked()
-                && let Some(path) = dialog::save("Save the diagnostic log", &[("Text", "*.txt")], "victory-diagnostics.txt")
+            let compact = ui
+                .button("Export diagnostic log...")
+                .on_hover_text("Small enough to share: repeated lines cut to their first five and their last; every warning, error and frame-rate line kept")
+                .clicked();
+            let full = ui.button("Export full log...").on_hover_text("Every line the title and the task printed (megabytes after a few minutes)").clicked();
+            if (compact || full)
+                && let Some(path) = dialog::save("Save the diagnostic log", &[("Text", "*.txt")], if full { "victory-diagnostics-full.txt" } else { "victory-diagnostics.txt" })
             {
-                let mut text = String::from("VIctory Optimized diagnostic log\n");
+                let mut text = String::from(if full { "VIctory Optimized diagnostic log (full)\n" } else { "VIctory Optimized diagnostic log (compact)\n" });
                 text += &format!(
                     "branch {} at {}\nprofile {}; switches: {}\n",
                     self.git_branch,
@@ -670,7 +676,8 @@ impl App {
                     self.s.launch_env().iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(" ")
                 );
                 for (n, l) in &source {
-                    text += &format!("\n==== {n} ====\n{}\n", l.join("\n"));
+                    let body = if full { l.iter().map(|x| export::plain(x)).collect::<Vec<_>>().join("\n") } else { export::compact(l) };
+                    text += &format!("\n==== {n} ====\n{body}\n");
                 }
                 text += &format!("\n==== frame rate ====\n{}\n", self.frames.text());
                 match std::fs::write(&path, text) {
