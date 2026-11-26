@@ -628,7 +628,18 @@ impl HostPipeline {
             let pso = match made {
                 Ok(pso) => pso,
                 Err(e) => {
-                    tracing::warn!(error = %e, ?shaders, "host pipeline refused");
+                    // What the program asks of the host, from its own container: a
+                    // wave size the host does not run (NVIDIA: 32 lanes only) is
+                    // refused with E_INVALIDARG and no other word.
+                    let shape = stages
+                        .first()
+                        .and_then(|(s, _)| s.translated())
+                        .and_then(|t| compute_shape(&t.host.dxil))
+                        .map_or_else(String::new, |(lo, hi, g)| {
+                            let wave = if lo == 0 { "any".to_owned() } else if lo == hi { lo.to_string() } else { format!("{lo}-{hi}") };
+                            format!("wave size {wave}, group {}x{}x{}", g[0], g[1], g[2])
+                        });
+                    tracing::warn!(error = %e, ?shaders, shape, host_max_wave = victory_shader::emit::host_settings()[0], "host pipeline refused");
                     host.log_messages();
                     return None;
                 }
@@ -1066,8 +1077,62 @@ fn root_signature(
     }
 }
 
+/// A compute program's wave-size range and thread-group size, from its
+/// container's pipeline state validation part (`PSV0`): runtime info at 4,
+/// the wave range at 16..24 and the group at 36..48 of it
+/// (`victory_shader::emit::container`).
+fn compute_shape(dxil: &[u8]) -> Option<(u32, u32, [u32; 3])> {
+    let u32_at = |b: &[u8], at: usize| b.get(at..at + 4).map(|x| u32::from_le_bytes(x.try_into().unwrap()));
+    if dxil.get(..4)? != b"DXBC" {
+        return None;
+    }
+    let parts = u32_at(dxil, 28)? as usize;
+    for n in 0..parts.min(64) {
+        let at = u32_at(dxil, 32 + 4 * n)? as usize;
+        if dxil.get(at..at + 4)? == b"PSV0" {
+            let data = dxil.get(at + 8..at + 8 + u32_at(dxil, at + 4)? as usize)?;
+            if u32_at(data, 0)? < 48 {
+                return None;
+            }
+            let info = &data[4..];
+            let g = [u32_at(info, 36)?, u32_at(info, 40)?, u32_at(info, 44)?];
+            return Some((u32_at(info, 16)?, u32_at(info, 20)?, g));
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
+    /// The wave range and group are read where the container writer puts them.
+    #[test]
+    fn compute_shape_reads_the_psv0_runtime_info() {
+        let mut info = [0u8; 48];
+        info[16..20].copy_from_slice(&64u32.to_le_bytes());
+        info[20..24].copy_from_slice(&64u32.to_le_bytes());
+        for (k, n) in [256u32, 1, 1].into_iter().enumerate() {
+            info[36 + 4 * k..40 + 4 * k].copy_from_slice(&n.to_le_bytes());
+        }
+        let mut psv = 48u32.to_le_bytes().to_vec();
+        psv.extend(info);
+        let mut c = b"DXBC".to_vec();
+        c.extend([0; 16]);
+        c.extend(1u32.to_le_bytes()); // version
+        c.extend(0u32.to_le_bytes()); // total (unread)
+        c.extend(2u32.to_le_bytes()); // parts
+        let first = 32 + 8;
+        c.extend((first as u32).to_le_bytes());
+        c.extend(((first + 8 + 4) as u32).to_le_bytes());
+        c.extend(b"SFI0");
+        c.extend(4u32.to_le_bytes());
+        c.extend([0; 4]);
+        c.extend(b"PSV0");
+        c.extend((psv.len() as u32).to_le_bytes());
+        c.extend(psv);
+        assert_eq!(super::compute_shape(&c), Some((64, 64, [256, 1, 1])));
+        assert_eq!(super::compute_shape(b"nope"), None);
+    }
+
     use std::path::{Path, PathBuf};
     use std::sync::atomic::Ordering;
 
