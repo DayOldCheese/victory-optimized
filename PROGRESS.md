@@ -168,3 +168,32 @@ Performance profiling and rendering correctness (see the user's direction
 of 2026-11-26): memory management, GPU use, textures, lighting. Measured
 with authorised fixtures only (the crate's own synthetic GPU benchmarks,
 WARP and host-GPU tests); no title files.
+
+## Textures: BCPack decode profile (2026-11-26)
+
+`cargo test -p victory-formats --release --lib bcpack::tests::bcpack_throughput -- --ignored --nocapture`
+now also times the lanes (rANS and schedule) alone. 16,384 synthetic blocks,
+two runs each, ns per block:
+
+| Format | Before: total (lanes + blocks) | `Lane::step` inlined |
+|---|---|---|
+| BC1 | 106–108 (88 + 18–20) | 93–96 (80–81 + 12–16) |
+| BC4 | 104 (89 + 15) | 94–96 (81–83 + 13–14) |
+| BC7 | 365–366 (251 + 114) | 340–341 (228–229 + 111–113) |
+
+- **Measured:** 10–12 % from `#[inline(always)]` on `Lane::step`. All 25
+  format tests pass, including round trips, the reference rANS decode and
+  noise.
+- **Where the time goes:** the lanes take 69–87 % of it, about 7 ns per
+  lane step, which points to branch mispredictions in the step and round
+  loop rather than arithmetic.
+- **Rewrite, not justified yet:**
+  - The source's suggestion to decode lanes apart does not work as stated:
+    which lane takes the next byte depends on each lane's decode state.
+  - What would pay off is a SIMD step of all lanes per round. It is
+    theoretical, a few times faster in the lanes by estimate, and high risk
+    (bit-exact schedule).
+  - DirectStorage already decodes requests in parallel on a worker pool of
+    one thread per core.
+  - Do it only if an authorised run's `dstorage` debug line shows
+    `bcpack_workers` near the worker count.
