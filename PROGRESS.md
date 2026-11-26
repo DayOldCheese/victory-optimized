@@ -283,3 +283,21 @@ extracted to a file.
 `watch::tests::a_write_is_reported_at_every_checked_view` failed once in 38
 suite runs and not in 30 more. `watch.rs` is unchanged since the initial
 commit. Not investigated further.
+
+### Release candidate validation (2026-11-26, late)
+
+- `cargo test --locked --workspace --release`: every crate passes. 594
+  passed, 0 failed:
+  - victory-gpu 191;
+  - victory-shader 217;
+  - victory-hle 98;
+  - victory-formats 27;
+  - victory-loader 27 + 4 integration;
+  - the rest 34.
+- `cargo build --locked --release -p victory --features diagnostics`:
+  succeeds.
+- **Sustained 60 FPS was not measured.** No authorised title workload
+  exists in this environment. The synthetic benchmarks say where frame
+  time goes, not what a frame costs. The largest such cost is the per-draw
+  clamp pass (about 23 ms of GPU at 3,200 indirect draws, by itself over
+  16.7 ms). See RESEARCH.md §1 and ROADMAP.md item 2.
