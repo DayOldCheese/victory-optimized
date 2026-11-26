@@ -2965,6 +2965,103 @@ void main() {
         }
     }
 
+    /// The card cost of the waits around each indirect command's clamp,
+    /// against a list whose commands each run between two passes of work
+    /// (the title's argument passes and draws). Per 1,000 commands:
+    /// `full`, both waits for every earlier shader write (the default);
+    /// `lean`, the first only (`VICTORY_CLAMP_LEAN=1`); `gathered`, the
+    /// clamps all in one pass at the list's start and no wait between the
+    /// commands (what `VICTORY_INDIRECT_GATHER` aims at); `no clamp`, the
+    /// work alone. `cargo test -p victory-gpu --release bench_clamp_waits
+    /// -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_clamp_waits() {
+        let Some(mut card) = WarpHarness::on_card() else {
+            eprintln!("no hardware adapter; skipped");
+            return;
+        };
+        let c = make_for(&card.device).expect("our clamp");
+        const STRIDE: u32 = 20;
+        const COMMANDS: u32 = 1000;
+        const WORK: u32 = 1 << 14; // records of each pass of work: 256 groups
+        let fill = |card: &mut WarpHarness, n: u32| {
+            let (buf, ptr, _) = card.shared_buffer(u64::from(STRIDE * n));
+            // SAFETY: the mapping holds the records.
+            unsafe {
+                for i in 0..n as usize {
+                    for (w, v) in [3u32, 1, 0, 0, 0].into_iter().enumerate() {
+                        ptr.cast::<u32>().add(i * 5 + w).write_volatile(v);
+                    }
+                }
+            }
+            buf
+        };
+        let work_src = fill(&mut card, WORK);
+        let cmd_src = fill(&mut card, COMMANDS);
+        let work_dst = card.default_uav(u64::from(STRIDE * WORK));
+        let cmd_dst = card.default_uav(u64::from(STRIDE * COMMANDS));
+        let budget = card.default_uav(256);
+        // SAFETY: live buffers.
+        let (wsrc, csrc, wdst, cdst, bud) = unsafe {
+            (
+                work_src.GetGPUVirtualAddress(),
+                cmd_src.GetGPUVirtualAddress(),
+                work_dst.GetGPUVirtualAddress(),
+                cmd_dst.GetGPUVirtualAddress(),
+                budget.GetGPUVirtualAddress(),
+            )
+        };
+        let dispatch = |l: &ID3D12GraphicsCommandList, src: u64, dst: u64, records: u32, offset: u32| {
+            let k = [1u32, STRIDE, records, offset, 0, 0];
+            // SAFETY: an open list; our root signature and pipeline.
+            unsafe {
+                l.SetComputeRootSignature(&c.root);
+                l.SetPipelineState(&c.pso);
+                l.SetComputeRoot32BitConstants(0, 6, k.as_ptr().cast(), 0);
+                l.SetComputeRootShaderResourceView(1, src);
+                l.SetComputeRootShaderResourceView(2, src);
+                l.SetComputeRootUnorderedAccessView(3, dst);
+                l.SetComputeRootUnorderedAccessView(4, bud);
+                l.Dispatch(records.div_ceil(64), 1, 1);
+            }
+        };
+        for mode in ["no clamp", "gathered", "lean", "full"] {
+            let best = (0..7)
+                .map(|_| {
+                    let l = &card.list;
+                    // SAFETY: an open list; buffers start and end in COMMON.
+                    unsafe {
+                        l.ResourceBarrier(&[transition(&cmd_dst, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)]);
+                        if mode == "gathered" {
+                            dispatch(l, csrc, cdst, COMMANDS, 0);
+                            l.ResourceBarrier(&[uav_barrier()]);
+                        }
+                        for i in 0..COMMANDS {
+                            // The title's pass of work before the command.
+                            dispatch(l, wsrc, wdst, WORK, 0);
+                            match mode {
+                                "lean" | "full" => {
+                                    l.ResourceBarrier(&[uav_barrier()]);
+                                    dispatch(l, csrc, cdst + u64::from(i * STRIDE), 1, 0);
+                                    if mode == "full" {
+                                        l.ResourceBarrier(&[uav_barrier()]);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        l.ResourceBarrier(&[transition(&cmd_dst, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON)]);
+                    }
+                    let started = std::time::Instant::now();
+                    card.submit_and_wait();
+                    started.elapsed().as_secs_f64() * 1e3
+                })
+                .fold(f64::INFINITY, f64::min);
+            eprintln!("{COMMANDS} commands, {mode:>8}: {best:.2} ms");
+        }
+    }
+
     /// The records that keep the budget are the first ones in record order
     /// across many groups, from a budget already partly spent, whatever
     /// order the device runs the groups in; records that cost nothing are

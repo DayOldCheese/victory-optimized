@@ -49,12 +49,14 @@ pub const PERFORMANCE: &[Switch] = &[
     s("VICTORY_CARD_WINDOWS_MB", "1024", "Card memory for copies of title memory. Upstream: 2048 left textures black when the card ran out of room (run 295); 1024 is its middle setting."),
     s("VICTORY_CARD_BUFFERS_MB", "1280", "Card memory for copies of title buffers."),
     s("VICTORY_CARD_BUFFERS_MIN_KB", "64", "Only buffers of 64 KiB or more get a card copy."),
+    s("VICTORY_INDIRECT_GATHER", "1", "Single indirect records clamped in one pass per list instead of a pass and two full card waits each (checked exact upstream: 7.9 million records)."),
+    s("VICTORY_GATHER_ALONE", "1", "Gathering without draw windows (the part tied to lost cards). RTX 3060 bench, 1,000 commands: 7.11 ms -> 2.16 ms."),
+    s("VICTORY_GATHER_SEGMENTS", "1", "After a command that may write arguments, the following records share one pass instead of one each."),
 ];
 
 /// What the experimental profile adds to the performance one.
 pub const EXPERIMENTAL: &[Switch] = &[
     x("VICTORY_INDIRECT_WINDOW", "1", "Indirect draws clamped a window at a time: 0.33 us a draw against 7.3 in this fork's bench. In upstream's runs that lost the card."),
-    x("VICTORY_INDIRECT_GATHER", "1", "Scattered indirect records clamped in one pass per list. Needs windows; in the same runs."),
 ];
 
 /// A run profile.

@@ -441,7 +441,7 @@ impl App {
             let (label, note) = match p {
                 Profile::Stable => ("Stable", "The layer's defaults. Best understood, and much slower: upstream notes 3 to 6 seconds a frame in the world with them."),
                 Profile::Performance => ("Performance", "Upstream's measured set (8 to 9.5 world FPS in its runs; not measured here). Includes the water fix."),
-                Profile::Experimental => ("Experimental (unstable)", "Performance plus indirect windows and gathers: the largest GPU saving, and tied to lost cards in upstream's runs."),
+                Profile::Experimental => ("Experimental (unstable)", "Performance plus indirect draw windows: tied to lost cards in upstream's runs."),
             };
             ui.horizontal(|ui| {
                 ui.radio_value(&mut self.s.profile, p.name().to_owned(), RichText::new(label).strong());

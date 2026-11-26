@@ -398,6 +398,23 @@ fn jump_windows() -> bool {
     }
 }
 
+/// Whether single indirect records gather for their list's prelude with
+/// draw windows off (`VICTORY_GATHER_ALONE=1`, with
+/// `VICTORY_INDIRECT_GATHER=1`; off by default).
+///
+/// Gathering was built beside windows, for the records that miss one, but
+/// its exactness does not rest on them: the prelude clamps a record before
+/// the list runs, and the list stops gathering at the first command that
+/// may write arguments ([`State::gather_ends`]), windows or not. Windows
+/// are the part tied to lost cards (upstream's README). Bench on an RTX
+/// 3060 (`indirect::tests::bench_clamp_waits`, 1,000 commands between
+/// passes of work): 7.11 ms with a pass of ours and two waits each, 2.16 ms
+/// gathered, 2.25 ms with no clamp at all.
+fn gather_alone() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("VICTORY_GATHER_ALONE").as_deref() == Ok("1"))
+}
+
 /// Whether a single record that misses its window is gathered: given a
 /// slot that the list's prelude fills in one pass with the list's other
 /// such records, in place of a pass of ours in front of its draw
@@ -1143,6 +1160,18 @@ macro_rules! once {
 /// each time. With this both ask for the larger count ([`stage_spans`]),
 /// the second finds the first one's table, and one table is made.
 fn table_stages() -> bool {
+    table_stages_mode()
+}
+
+/// `VICTORY_TABLE_BY_ADDRESS=1`: `State::fresh_tables` keys a table by its
+/// address in the title's heap as well as its records (the old behaviour).
+/// Off by default: equal records at two addresses share one made table.
+fn table_by_address() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("VICTORY_TABLE_BY_ADDRESS").as_deref() == Ok("1"))
+}
+
+fn table_stages_mode() -> bool {
     /// 0 off, 1 on, 2 in turn every 20 s, 3 in turn every 40 s.
     static MODE: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
     match *MODE.get_or_init(|| match std::env::var("VICTORY_TABLE_STAGES").as_deref() {
@@ -3981,7 +4010,13 @@ impl State {
                     // that reads them in the title's formats.)
                     half.contains(&(slot, k * 8)).hash(&mut h);
                 }
-                (table, n, h.finish())
+                // By contents, not the table's address: a table with the
+                // same records at another address of the title's heap is
+                // served by the slots made for the first (the log of
+                // 2026-11-26: 1,888 of 24,225 tables a frame, while the
+                // ring ran down to 30 free slots and draws were dropped).
+                // `VICTORY_TABLE_BY_ADDRESS=1` keys by address as before.
+                (if table_by_address() { table } else { 0 }, n, h.finish())
             };
             #[cfg(feature = "diagnostics")]
             tally(0, 1);
@@ -4468,7 +4503,15 @@ impl State {
             && !is_spread
             && gathers()
             && crate::indirect::gather_dispatches();
-        if !windowed && !joins {
+        // With `VICTORY_GATHER_ALONE`: the same single records gather for
+        // the list's prelude with windows off ([`gather_alone`]).
+        let lone = windowed
+            || (gather_alone()
+                && kind != DISPATCH
+                && max == 1
+                && count.is_none()
+                && !p.stages.iter().any(|stage| stage.translated().stores));
+        if !lone && !joins {
             // A dispatch, or shaders that store to buffers: arguments may
             // be written from here on.
             self.gather_ends(list, true);
@@ -4504,7 +4547,7 @@ impl State {
             .map(|w| (w.scratch.clone(), offset - w.base, w.step));
         // A record that misses its window: a slot the list's prelude fills,
         // if the list still gathers ([`gathers`]).
-        let gathered = if hit.is_none() && (windowed || joins) && gathers() {
+        let gathered = if hit.is_none() && (lone || joins) && gathers() {
             let slot = crate::indirect::gather(list, (&args.buffer, args.id()), offset, (kind, stride));
             #[cfg(feature = "diagnostics")]
             WINDOW_WHY[if slot.is_some() { 12 } else { 13 }].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
