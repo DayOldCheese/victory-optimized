@@ -139,6 +139,29 @@ instead of completing.
 `cargo build --locked --release -p victory --features diagnostics`:
 succeeds.
 
+## Memory: `changed_chunks` double scan (patch 1 revisited)
+
+Used to send only changed bytes of a card-side copy (`VICTORY_COPY_CHANGED=1`,
+off by default). Patch 1 compared the whole span before the chunk loop. Now
+equal 4 KiB blocks (16 chunks) are skipped with one compare each, and every
+byte is compared once. A randomised test (300 spans, 5 chunk sizes) checks
+the output is identical to upstream's.
+
+`cargo test -p victory-gpu --release --lib shadow::merge_tests::bench_changed_chunks -- --ignored --nocapture`
+(best of five, 64 KiB spans, three runs):
+
+| Case | upstream | patch 1 | now |
+|---|---|---|---|
+| all equal | 1071–1073 ns | 602–807 ns | 694–876 ns |
+| one change at byte 65,000 | 1122–1145 ns | 2019–2060 ns | 1052–1088 ns |
+| a change every 8 KiB | 1241–1259 ns | 1244–1255 ns | 1291–1376 ns |
+
+Patch 1 cost +80 % when the change lies late in the span. The new form
+removes that, keeps most of patch 1's all-equal gain, and costs 4–10 % when
+changes are dense. Whether this matters in a frame depends on how often the
+switch is on and how big the spans are; there is no title data here to
+measure that.
+
 ## Next
 
 Performance profiling and rendering correctness (see the user's direction

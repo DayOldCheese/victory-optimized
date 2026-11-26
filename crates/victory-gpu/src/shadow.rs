@@ -1841,18 +1841,27 @@ static COPY_CHANGED: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 /// leaves them alone, and `Shadow::copy_stale` is given whole pages).
 const COPY_CHANGED_CHUNK: usize = 256;
 
+/// Chunks [`changed_chunks`] steps over at once while they are equal.
+const CHUNKS_A_BLOCK: usize = 16;
+
 /// The stretches of `now` that differ from `was` (of one length), in
 /// whole chunks of `chunk` bytes (the last one shorter), as (offset,
 /// bytes) in order, chunks side by side made one stretch.
 fn changed_chunks(now: &[u8], was: &[u8], chunk: usize) -> Vec<(usize, usize)> {
     let n = now.len().min(was.len());
-    // Skip the per-chunk loop when the entire common span is unchanged.
-    if now[..n] == was[..n] {
-        return Vec::new();
-    }
+    // Equal stretches go a block of sixteen chunks at a time (one compare
+    // each), from a block's first chunk; a block that differs is compared
+    // chunk by chunk. Each byte is compared once. Before, an equal span was
+    // found with one compare of all of it, but a span with any change was
+    // compared up to its first change twice: once whole, once by chunks.
+    let block = chunk.saturating_mul(CHUNKS_A_BLOCK);
     let mut out: Vec<(usize, usize)> = Vec::new();
     let mut at = 0;
     while at < n {
+        if at.is_multiple_of(block) && n - at >= block && now[at..at + block] == was[at..at + block] {
+            at += block;
+            continue;
+        }
         let len = chunk.min(n - at);
         if now[at..at + len] != was[at..at + len] {
             match out.last_mut() {
@@ -1907,17 +1916,100 @@ mod merge_tests {
         assert_eq!(changed_chunks(&a, &b, 256), [(65280, 256)]);
     }
 
+    /// [`changed_chunks`] as upstream has it: chunk by chunk, no skipping.
+    fn chunks_upstream(now: &[u8], was: &[u8], chunk: usize) -> Vec<(usize, usize)> {
+        let n = now.len().min(was.len());
+        let mut out: Vec<(usize, usize)> = Vec::new();
+        let mut at = 0;
+        while at < n {
+            let len = chunk.min(n - at);
+            if now[at..at + len] != was[at..at + len] {
+                match out.last_mut() {
+                    Some(last) if last.0 + last.1 == at => last.1 += len,
+                    _ => out.push((at, len)),
+                }
+            }
+            at += len;
+        }
+        out
+    }
+
+    /// As the first patch of this fork had it: one compare of the whole
+    /// span first, then upstream's loop if anything differs.
+    fn chunks_whole_first(now: &[u8], was: &[u8], chunk: usize) -> Vec<(usize, usize)> {
+        let n = now.len().min(was.len());
+        if now[..n] == was[..n] {
+            return Vec::new();
+        }
+        chunks_upstream(now, was, chunk)
+    }
+
+    #[test]
+    fn changed_chunks_match_upstream_on_random_spans() {
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for round in 0..300 {
+            let len = (next() % 70_000) as usize;
+            let was: Vec<u8> = (0..len).map(|_| next() as u8).collect();
+            let mut now = was.clone();
+            for _ in 0..(next() % 6) {
+                if len > 0 {
+                    let at = (next() as usize) % len;
+                    let run = 1 + (next() as usize) % 600;
+                    for b in &mut now[at..(at + run).min(len)] {
+                        *b ^= 0xA5;
+                    }
+                }
+            }
+            // Unequal lengths: only the common span counts.
+            if round % 7 == 0 {
+                now.push(1);
+            }
+            for chunk in [1, 3, 64, 256, 4096] {
+                assert_eq!(changed_chunks(&now, &was, chunk), chunks_upstream(&now, &was, chunk), "round {round} chunk {chunk}");
+            }
+        }
+    }
+
+    /// Nanoseconds a call of the three forms on 64 KiB spans: all equal,
+    /// one byte changed near the end, and a byte changed every 8 KiB.
     #[test]
     #[ignore = "benchmark"]
-    fn bench_changed_chunks_equal_span() {
+    fn bench_changed_chunks() {
         use std::{hint::black_box, time::Instant};
-        let a = vec![42u8; 65536];
-        let b = a.clone();
-        let start = Instant::now();
-        for _ in 0..100_000 {
-            black_box(changed_chunks(black_box(&a), black_box(&b), 256));
+        type Form = fn(&[u8], &[u8], usize) -> Vec<(usize, usize)>;
+        let forms: [(&str, Form); 3] = [("upstream", chunks_upstream), ("whole first", chunks_whole_first), ("this tree", changed_chunks)];
+        let was: Vec<u8> = (0..65536u32).map(|i| (i * 2654435761u32 >> 24) as u8).collect();
+        let mut late = was.clone();
+        late[65000] ^= 1;
+        let mut sparse = was.clone();
+        for at in (100..65536).step_by(8192) {
+            sparse[at] ^= 1;
         }
-        eprintln!("equal span scan: {:?}", start.elapsed());
+        let cases: [(&str, &[u8]); 3] = [("equal", &was), ("one change at 65000", &late), ("a change every 8 KiB", &sparse)];
+        const RUNS: u32 = 50_000;
+        for (case, now) in cases {
+            let mut line = format!("{case:>22}:");
+            for (name, form) in forms {
+                // Best of five, to keep scheduling noise out.
+                let best = (0..5)
+                    .map(|_| {
+                        let start = Instant::now();
+                        for _ in 0..RUNS {
+                            black_box(form(black_box(now), black_box(&was), 256));
+                        }
+                        start.elapsed().as_nanos() as f64 / f64::from(RUNS)
+                    })
+                    .fold(f64::INFINITY, f64::min);
+                line += &format!("  {name} {best:.0} ns");
+            }
+            eprintln!("{line}");
+        }
     }
 
     #[test]
