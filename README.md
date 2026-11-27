@@ -67,6 +67,9 @@ Known problems:
 - **Refused pipelines say why.** A compute pipeline the driver refuses is logged
   with the wave size and thread-group size it asks for, read from the program's
   own container. That is how the 64-lane programs above were identified.
+- **DLSS in place of the title's upscaler** (optional, above). The bridge to
+  the title's FidelityFX calls answers FidelityFX's own queries the way
+  FidelityFX does, and takes DLSS's flags from the title's own settings.
 - **NVIDIA review.** The AMD-specific assumptions in the shader translator and
   the Direct3D 12 back end (wave size, RDNA float shortcuts, descriptor heap
   limits) were checked against 32-lane NVIDIA hosts.
@@ -96,6 +99,27 @@ In the app:
    build.
 4. **Launch Game**. Afterwards, **Export diagnostic log** saves the compact log.
 
+### NVIDIA DLSS (optional)
+
+The title upscales its picture with FidelityFX. Translated for NVIDIA's
+32-lane waves, those passes are slow (about 150 ms of card time a frame on an
+RTX 3070 Ti, as aleksesipenko/VIctory-RTX measured it). With
+`VICTORY_UPSCALE=dlss`, Mandy gives the same inputs (colour, depth, motion
+vectors, jitter) to DLSS Super Resolution instead, which runs on the card's
+tensor cores. This is not yet measured here.
+
+1. Get NVIDIA's SDK beside the repository, as `..\sdk\DLSS`:
+   `git clone --depth 1 https://github.com/NVIDIA/DLSS ..\sdk\DLSS`.
+2. Press **Build** in the app. With the SDK there, it builds with the `dlss`
+   feature. Without the app: set `VICTORY_DLSS_SDK` to the SDK and add
+   `--features diagnostics,dlss`.
+3. Turn on **VICTORY_UPSCALE=dlss** under "Graphics and debugging". The app
+   points `VICTORY_DLSS_DIR` at the SDK's `nvngx_dlss.dll`.
+
+The SDK is NVIDIA's (NVIDIA RTX SDKs licence) and is never part of this
+repository. **A build with DLSS is for your own PC: do not share it.** Without
+the SDK, the feature builds a stub that says so.
+
 Without the app, `scripts\play.ps1 -Exe <path>` runs the same settings. The
 upstream documentation is in [docs/README-7900XTX.md](docs/README-7900XTX.md)
 and [docs/README-fxceless.md](docs/README-fxceless.md), and every `VICTORY_...`
@@ -120,6 +144,16 @@ from elsewhere name their source.
   **[myokex/victory-amd](https://github.com/myokex/victory-amd)**, **Geckomacabre**
   and **cxy0072019-sketch**, as credited in
   [docs/README-7900XTX.md](docs/README-7900XTX.md).
+- Ported into Mandy, with each commit naming its source:
+  **[insenzaboor/victory-rtx3060](https://github.com/insenzaboor/victory-rtx3060)**
+  and **[deynesdev/Protonida](https://github.com/deynesdev/Protonida)** (the
+  wave64 fixes for 32-lane cards);
+  **[aleksesipenko/VIctory-RTX](https://github.com/aleksesipenko/VIctory-RTX)**
+  (the DLSS bridge Mandy's follows); **BradRoland**'s
+  [fxceless PR #1210](https://github.com/fxceless/victory-fork/pull/1210)
+  (streamed textures keep their minimum level of detail);
+  **[Maykzera/victory-rtx3060](https://github.com/Maykzera/victory-rtx3060)**
+  (the measured memory settings of the Fast profile).
 - **[XCL](https://github.com/ivall/xcl)** (GPL-2.0-only) was read for how the same
   title behaves under another layer. None of its code is here.
 - Mandy's changes were made with [Claude Code](https://claude.com/claude-code).

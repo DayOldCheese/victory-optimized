@@ -132,13 +132,29 @@ impl App {
     }
 
     fn start_task(&mut self, name: &str, program: &str, args: &[&str]) {
+        self.start_task_env(name, program, args, &[]);
+    }
+
+    fn start_task_env(&mut self, name: &str, program: &str, args: &[&str], env: &[(String, String)]) {
         if self.busy() {
             self.say(WARN, "another task is still running");
             return;
         }
         let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-        self.task = Some(Job::start(name, &self.s.repo, program, &args, &[]));
+        self.task = Some(Job::start(name, &self.s.repo, program, &args, env));
         self.say(ACCENT, format!("{name} started"));
+    }
+
+    /// The layer's build: the `diag` profile, with DLSS when the SDK is there
+    /// (that build is for this machine only: the SDK's licence).
+    fn start_build(&mut self) {
+        match self.s.dlss_sdk_dir() {
+            Some(sdk) => {
+                let env = [("VICTORY_DLSS_SDK".to_owned(), sdk.display().to_string())];
+                self.start_task_env("Build", "cargo", &["build", "--locked", "--profile", "diag", "-p", "victory", "--features", "diagnostics,dlss"], &env);
+            }
+            None => self.start_task("Build", "cargo", &["build", "--locked", "--profile", "diag", "-p", "victory", "--features", "diagnostics"]),
+        }
     }
 
     fn refresh_git(&mut self) {
@@ -394,8 +410,8 @@ impl App {
             ui.heading("Actions");
             ui.horizontal_wrapped(|ui| {
                 let busy = self.busy();
-                if ui.add_enabled(!busy, egui::Button::new("Build")).on_hover_text("cargo build --locked --profile diag -p victory --features diagnostics").clicked() {
-                    self.start_task("Build", "cargo", &["build", "--locked", "--profile", "diag", "-p", "victory", "--features", "diagnostics"]);
+                if ui.add_enabled(!busy, egui::Button::new("Build")).on_hover_text("cargo build --locked --profile diag -p victory --features diagnostics (and dlss when the DLSS SDK is beside the repository, sdk/DLSS)").clicked() {
+                    self.start_build();
                 }
                 if ui.add_enabled(!busy, egui::Button::new("Run Tests")).on_hover_text("cargo test --workspace --release (several minutes)").clicked() {
                     self.start_task("Run tests", "cargo", &["test", "--workspace", "--release"]);
@@ -597,7 +613,8 @@ impl App {
             ui.add_space(12.0);
             ui.heading("Graphics and debugging");
             ui.label("Only what the layer reads. Debug options slow a run down and are for finding faults.");
-            let extra: [(&str, &str, &str, bool); 12] = [
+            let extra: [(&str, &str, &str, bool); 13] = [
+                ("VICTORY_UPSCALE", "dlss", "NVIDIA DLSS in place of the title's own upscaler (needs a Build with the DLSS SDK beside the repository, sdk\\DLSS). The title's upscaler runs slowly translated on NVIDIA.", true),
                 ("VICTORY_WAVE_LDS_LOOSE", "1", "Last resort for console wave64 programs NVIDIA would refuse: run them approximately instead of not at all (a value shared inside a branch may be read stale).", true),
                 ("VICTORY_WAVE_WHY", "1", "Debugging: logs why a program keeps 64-lane waves (NVIDIA refuses those).", false),
                 ("VICTORY_PORT_CONSTANTS", "1", "Renderer patch 1: the title's constants heap read by the card where the title writes it (README). Off by default while tested.", true),

@@ -247,9 +247,10 @@ pub fn use_host_dir(dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Whether the host's FidelityFX serves the title's.
+/// Whether the host's FidelityFX serves the title's, or DLSS does
+/// ([`use_dlss`]).
 pub fn serving() -> bool {
-    HOST.get().is_some()
+    HOST.get().is_some() || dlss_mode()
 }
 
 fn load(dir: &Path) -> Result<(Host, String), String> {
@@ -422,6 +423,9 @@ extern "C" fn ffxCreateContext(
     desc: *mut Header,
     memory: *const c_void,
 ) -> u32 {
+    if dlss_mode() {
+        return dlss_create(context, desc);
+    }
     let Some(host) = HOST.get() else {
         return NO_PROVIDER;
     };
@@ -514,6 +518,9 @@ extern "C" fn ffxCreateContext(
 }
 
 extern "C" fn ffxDestroyContext(context: *mut *mut c_void, memory: *const c_void) -> u32 {
+    if dlss_mode() {
+        return dlss_destroy(context);
+    }
     let Some(host) = HOST.get() else {
         return NO_PROVIDER;
     };
@@ -552,12 +559,19 @@ extern "C" fn ffxDestroyContext(context: *mut *mut c_void, memory: *const c_void
 
 /// Settings (key-value pairs, debug messages) name nothing console-specific.
 extern "C" fn ffxConfigure(context: *mut *mut c_void, desc: *mut Header) -> u32 {
+    if dlss_mode() {
+        // (key-value settings and debug messages: nothing for DLSS)
+        return OK;
+    }
     // SAFETY: the title passes its context and descriptions.
     HOST.get()
         .map_or(NO_PROVIDER, |h| unsafe { (h.configure)(context, desc) })
 }
 
 extern "C" fn ffxQuery(context: *mut *mut c_void, desc: *mut Header) -> u32 {
+    if dlss_mode() {
+        return dlss_query(context, desc);
+    }
     let Some(host) = HOST.get() else {
         return NO_PROVIDER;
     };
@@ -590,6 +604,9 @@ extern "C" fn ffxQuery(context: *mut *mut c_void, desc: *mut Header) -> u32 {
 }
 
 extern "C" fn ffxDispatch(context: *mut *mut c_void, desc: *mut Header) -> u32 {
+    if dlss_mode() {
+        return dlss_dispatch(context, desc);
+    }
     let Some(host) = HOST.get() else {
         return NO_PROVIDER;
     };
@@ -750,6 +767,352 @@ fn record_dispatch(
     code
 }
 
+// ---- DLSS (`VICTORY_UPSCALE=dlss`) ----------------------------------------
+//
+// The title's FidelityFX calls answered for NVIDIA DLSS (`super::dlss`): a
+// context of ours per upscaler the title makes, the queries FidelityFX would
+// answer (render size from a quality mode, the jitter sequence) answered as
+// FidelityFX answers them, and each upscale recorded by DLSS on the title's
+// host list. After aleksesipenko/VIctory-RTX's `ffx.rs` (GPL-3.0).
+
+const QUERY_UPSCALE_RATIO: u64 = 0x1_0002;
+const QUERY_JITTER_PHASE_COUNT: u64 = 0x1_0004;
+const QUERY_JITTER_OFFSET: u64 = 0x1_0005;
+const QUERY_MEMORY_USAGE: u64 = 0x1_0008;
+
+#[repr(C)]
+struct QueryUpscaleRatio {
+    header: Header,
+    quality_mode: u32,
+    out_ratio: *mut f32,
+}
+
+#[repr(C)]
+struct QueryRenderResolution {
+    header: Header,
+    display: [u32; 2],
+    quality_mode: u32,
+    out_width: *mut u32,
+    out_height: *mut u32,
+}
+
+#[repr(C)]
+struct QueryJitterPhaseCount {
+    header: Header,
+    render_width: u32,
+    display_width: u32,
+    out_count: *mut i32,
+}
+
+#[repr(C)]
+struct QueryJitterOffset {
+    header: Header,
+    index: i32,
+    phase_count: i32,
+    out_x: *mut f32,
+    out_y: *mut f32,
+}
+
+#[repr(C)]
+struct QueryMemoryUsage {
+    header: Header,
+    usage: *mut [u64; 2],
+}
+
+const _: () = assert!(std::mem::offset_of!(QueryJitterPhaseCount, out_count) == 0x18);
+const _: () = assert!(std::mem::offset_of!(QueryJitterOffset, out_x) == 0x18);
+const _: () = assert!(std::mem::offset_of!(QueryRenderResolution, out_width) == 0x20);
+
+/// `VICTORY_UPSCALE=dlss`, taken ([`use_dlss`]).
+static DLSS_MODE: OnceLock<()> = OnceLock::new();
+
+fn dlss_mode() -> bool {
+    DLSS_MODE.get().is_some()
+}
+
+/// The title's upscale by DLSS instead of its console FidelityFX: before the
+/// title's imports are bound. A build without DLSS says so.
+pub fn use_dlss() -> Result<(), String> {
+    if !super::dlss::BUILT {
+        return Err("VICTORY_UPSCALE=dlss: this build has no DLSS (build with --features dlss and VICTORY_DLSS_SDK set to a checkout of NVIDIA/DLSS)".into());
+    }
+    if HOST.get().is_some() {
+        return Err("VICTORY_UPSCALE=dlss and FSR 4K both asked for: one upscaler at a time".into());
+    }
+    let _ = DLSS_MODE.set(());
+    tracing::info!("FidelityFX: the title's upscale goes to DLSS");
+    Ok(())
+}
+
+/// A DLSS context: the title's creation flags and largest sizes.
+#[derive(Clone, Copy)]
+struct DlssContext {
+    #[cfg_attr(not(ngx), allow(dead_code))]
+    flags: u32,
+    max_render: [u32; 2],
+    max_output: [u32; 2],
+}
+
+static DLSS_CONTEXTS: Mutex<BTreeMap<usize, DlssContext>> = Mutex::new(BTreeMap::new());
+
+/// FidelityFX's upscale ratio for a quality mode (native, quality, balanced,
+/// performance, ultra performance).
+fn upscale_ratio(mode: u32) -> f32 {
+    match mode {
+        0 => 1.0,
+        1 => 1.5,
+        2 => 1.7,
+        3 => 2.0,
+        4 => 3.0,
+        _ => 1.5,
+    }
+}
+
+/// FidelityFX's jitter phase count: 8 times the square of the scale.
+fn jitter_phase_count(render_width: u32, display_width: u32) -> i32 {
+    let ratio = display_width.max(1) as f32 / render_width.max(1) as f32;
+    (8.0 * ratio * ratio).ceil().max(1.0) as i32
+}
+
+fn halton(mut index: i32, base: i32) -> f32 {
+    let (mut f, mut r) = (1.0_f32, 0.0_f32);
+    while index > 0 {
+        f /= base as f32;
+        r += f * (index % base) as f32;
+        index /= base;
+    }
+    r
+}
+
+/// FidelityFX's jitter offset: Halton (2, 3) from index 1, centred.
+fn jitter_offset(index: i32, phase_count: i32) -> (f32, f32) {
+    let i = index.rem_euclid(phase_count.max(1)) + 1;
+    (halton(i, 2) - 0.5, halton(i, 3) - 0.5)
+}
+
+fn dlss_create(context: *mut *mut c_void, desc: *mut Header) -> u32 {
+    if context.is_null() || desc.is_null() {
+        return PARAMETER;
+    }
+    // SAFETY: the title passes a chain of descriptions.
+    if unsafe { (*desc).kind } != CREATE_UPSCALE {
+        once!(warn, "FidelityFX: only the upscaler runs with DLSS; another effect was refused");
+        return NO_PROVIDER;
+    }
+    // SAFETY: an upscaler description, by its type.
+    let c = unsafe { desc.cast::<CreateUpscale>().read() };
+    let ours = Box::into_raw(Box::new(0u64)).cast::<c_void>();
+    DLSS_CONTEXTS.lock().unwrap_or_else(|e| e.into_inner()).insert(
+        ours as usize,
+        DlssContext { flags: c.flags, max_render: c.max_render, max_output: c.max_output },
+    );
+    // SAFETY: the title's out pointer.
+    unsafe { *context = ours };
+    tracing::info!(render = ?c.max_render, output = ?c.max_output, flags = format_args!("{:#x}", c.flags), "FidelityFX: upscaler context for DLSS");
+    OK
+}
+
+fn dlss_destroy(context: *mut *mut c_void) -> u32 {
+    if context.is_null() {
+        return PARAMETER;
+    }
+    // SAFETY: the title passes its context.
+    let handle = unsafe { *context };
+    if DLSS_CONTEXTS.lock().unwrap_or_else(|e| e.into_inner()).remove(&(handle as usize)).is_none() {
+        return PARAMETER;
+    }
+    #[cfg(ngx)]
+    super::dlss::release();
+    // SAFETY: made by `Box::into_raw` in `dlss_create`, removed from the map once.
+    unsafe {
+        drop(Box::from_raw(handle.cast::<u64>()));
+        *context = null_mut();
+    }
+    OK
+}
+
+fn dlss_query(_context: *mut *mut c_void, desc: *mut Header) -> u32 {
+    if desc.is_null() {
+        return PARAMETER;
+    }
+    // SAFETY: the title passes a description; each is read by its type.
+    unsafe {
+        match (*desc).kind {
+            QUERY_UPSCALE_RATIO => {
+                let q = &*desc.cast::<QueryUpscaleRatio>();
+                if !q.out_ratio.is_null() {
+                    *q.out_ratio = upscale_ratio(q.quality_mode);
+                }
+            }
+            GET_RENDER_RESOLUTION => {
+                let q = &*desc.cast::<QueryRenderResolution>();
+                let ratio = upscale_ratio(q.quality_mode);
+                if !q.out_width.is_null() {
+                    *q.out_width = (q.display[0] as f32 / ratio).round() as u32;
+                }
+                if !q.out_height.is_null() {
+                    *q.out_height = (q.display[1] as f32 / ratio).round() as u32;
+                }
+            }
+            QUERY_JITTER_PHASE_COUNT => {
+                let q = &*desc.cast::<QueryJitterPhaseCount>();
+                if !q.out_count.is_null() {
+                    *q.out_count = jitter_phase_count(q.render_width, q.display_width);
+                }
+            }
+            QUERY_JITTER_OFFSET => {
+                let q = &*desc.cast::<QueryJitterOffset>();
+                let (x, y) = jitter_offset(q.index, q.phase_count);
+                if !q.out_x.is_null() {
+                    *q.out_x = x;
+                }
+                if !q.out_y.is_null() {
+                    *q.out_y = y;
+                }
+            }
+            QUERY_MEMORY_USAGE => {
+                let q = &*desc.cast::<QueryMemoryUsage>();
+                if !q.usage.is_null() {
+                    *q.usage = [0, 0];
+                }
+            }
+            MEMORY_USAGE_WITH_DEVICE => {
+                let q = &*desc.cast::<MemoryUsageWithDevice>();
+                if !q.usage.is_null() {
+                    *q.usage.cast::<[u64; 2]>() = [0, 0];
+                }
+            }
+            GET_VERSIONS => {
+                let q = &*desc.cast::<GetVersions>();
+                if !q.count.is_null() {
+                    let room = *q.count;
+                    *q.count = 1;
+                    if room >= 1 {
+                        if !q.ids.is_null() {
+                            *q.ids = 1;
+                        }
+                        if !q.names.is_null() {
+                            *q.names = c"DLSS".as_ptr();
+                        }
+                    }
+                }
+            }
+            GET_PROVIDER_VERSION => {
+                let q = &mut *desc.cast::<ProviderVersion>();
+                q.id = 1;
+                q.name = c"DLSS".as_ptr();
+            }
+            kind => {
+                once!(warn, kind = format_args!("{kind:#x}"), "FidelityFX: a query DLSS does not answer (left as it was)");
+            }
+        }
+    }
+    OK
+}
+
+fn dlss_dispatch(context: *mut *mut c_void, desc: *mut Header) -> u32 {
+    if desc.is_null() || context.is_null() {
+        return PARAMETER;
+    }
+    // SAFETY: the title passes a description.
+    if unsafe { (*desc).kind } != DISPATCH_UPSCALE {
+        once!(warn, "FidelityFX: only upscaling runs with DLSS; a dispatch was refused");
+        return UNKNOWN_TYPE;
+    }
+    // SAFETY: an upscaling, by its type.
+    let dispatch = unsafe { desc.cast::<DispatchUpscale>().read() };
+    // SAFETY: the title's context slot.
+    let handle = unsafe { *context } as usize;
+    let Some(ctx) = DLSS_CONTEXTS.lock().unwrap_or_else(|e| e.into_inner()).get(&handle).copied() else {
+        once!(warn, "FidelityFX dispatch referenced an unregistered context");
+        return PARAMETER;
+    };
+    if let Some(index) = [0, 1, 2, 6].into_iter().find(|&i| dispatch.resources[i].resource.is_null()) {
+        once!(warn, index, "FidelityFX dispatch is missing a required texture");
+        return PARAMETER;
+    }
+    let Some(output_size) = dispatch_output(dispatch.render_size, dispatch.upscale_size, ctx.max_render, ctx.max_output) else {
+        once!(warn, render = ?dispatch.render_size, output = ?dispatch.upscale_size, "FidelityFX dispatch sizes outside the context's");
+        return PARAMETER;
+    };
+    let list = dispatch.list.cast::<Object>().cast_const();
+    victory_gpu::external::record(list, |rec| dlss_record(rec, &ctx, &dispatch, output_size)).unwrap_or_else(|| {
+        once!(warn, "FidelityFX (DLSS) could not record to the title command list");
+        PARAMETER
+    })
+}
+
+#[cfg(not(ngx))]
+fn dlss_record(_: &victory_gpu::external::Recording<'_>, _: &DlssContext, _: &DispatchUpscale, _: [u32; 2]) -> u32 {
+    NO_PROVIDER
+}
+
+/// Shader-readable from compute and pixel stages, and unordered access.
+#[cfg(ngx)]
+const SHADER_READ: u32 = 0x40 | 0x80;
+#[cfg(ngx)]
+const UNORDERED: u32 = 0x8;
+
+#[cfg(ngx)]
+fn dlss_record(rec: &victory_gpu::external::Recording<'_>, ctx: &DlssContext, dispatch: &DispatchUpscale, output_size: [u32; 2]) -> u32 {
+    let Some(device) = victory_gpu::external::host_device() else { return NO_PROVIDER };
+    if !super::dlss::available(&device) {
+        return NO_PROVIDER;
+    }
+    let mut host = [None, None, None, None];
+    for (slot, index) in [0usize, 1, 2, 3].into_iter().enumerate() {
+        let r = dispatch.resources[index].resource.cast::<Object>();
+        if r.is_null() {
+            continue;
+        }
+        if rec.prepare_input(r).is_none() {
+            once!(warn, index, "DLSS: an input could not be prepared on the title command list");
+            return PARAMETER;
+        }
+        match rec.texture(r, SHADER_READ) {
+            Some((texture, state)) if state & SHADER_READ != 0 => host[slot] = Some(texture),
+            _ => {
+                once!(warn, index, "DLSS: an input has no host texture shaders can read");
+                return PARAMETER;
+            }
+        }
+    }
+    let output_object = dispatch.resources[6].resource.cast::<Object>();
+    let output = match rec.texture(output_object, UNORDERED) {
+        Some((texture, state)) if state == UNORDERED => texture,
+        _ => {
+            once!(warn, "DLSS: the output has no host texture with unordered access");
+            return PARAMETER;
+        }
+    };
+    let (Some(colour), Some(depth), Some(motion)) = (&host[0], &host[1], &host[2]) else {
+        return PARAMETER;
+    };
+    // `settings`: sharpening on, sharpness, frame time, pre-exposure, reset, ...
+    let inputs = super::dlss::Inputs {
+        colour,
+        depth,
+        motion,
+        exposure: host[3].as_ref(),
+        output: &output,
+        jitter: dispatch.jitter,
+        motion_scale: dispatch.motion_scale,
+        render: dispatch.render_size,
+        output_size,
+        reset: dispatch.settings[4] & 0xff != 0,
+        pre_exposure: f32::from_bits(dispatch.settings[3]),
+        frame_ms: f32::from_bits(dispatch.settings[2]),
+        create_flags: ctx.flags,
+    };
+    if !super::dlss::record(&device, rec.commands(), &inputs) {
+        return PARAMETER;
+    }
+    victory_gpu::external::output_written(output_object);
+    once!(info, render = ?dispatch.render_size, output = ?output_size, jitter = ?dispatch.jitter,
+        motion_vector_scale = ?dispatch.motion_scale, "DLSS recorded the title's first upscale");
+    OK
+}
+
 pub(crate) fn module() -> HleModule {
     HleModule {
         name: "fidelityfx",
@@ -893,5 +1256,35 @@ mod tests {
         assert_eq!(host_state(0x2), Some(0x8));
         assert_eq!(host_state(0x200), Some(0x10));
         assert_eq!(host_state(0x14), None);
+    }
+
+    /// The queries are answered as FidelityFX answers them.
+    #[test]
+    fn dlss_answers_fidelityfxs_queries_as_fidelityfx_does() {
+        assert_eq!(jitter_phase_count(1280, 1920), 18);
+        assert_eq!(jitter_phase_count(1920, 1920), 8);
+        assert_eq!(jitter_phase_count(960, 1920), 32);
+        let (x, y) = jitter_offset(0, 8);
+        assert!(x.abs() < 1e-6 && (y - (1.0 / 3.0 - 0.5)).abs() < 1e-6, "{x} {y}");
+        assert_eq!(jitter_offset(8, 8), jitter_offset(0, 8));
+        assert_eq!(upscale_ratio(1), 1.5);
+        assert_eq!(upscale_ratio(3), 2.0);
+        let (mut w, mut h) = (0u32, 0u32);
+        let mut q = QueryRenderResolution {
+            header: header(GET_RENDER_RESOLUTION, null_mut()),
+            display: [1920, 1080],
+            quality_mode: 1,
+            out_width: &raw mut w,
+            out_height: &raw mut h,
+        };
+        assert_eq!(dlss_query(null_mut(), &raw mut q.header), OK);
+        assert_eq!((w, h), (1280, 720));
+    }
+
+    #[test]
+    fn a_build_without_dlss_says_so() {
+        if !crate::modules::dlss::BUILT {
+            assert!(use_dlss().unwrap_err().contains("--features dlss"));
+        }
     }
 }

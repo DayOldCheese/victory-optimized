@@ -84,6 +84,11 @@ pub fn run(
         let cache = cfg.cache_subdir(&format!("images/fsr-{}-4k-sdr", preset.name()))?;
         victory_loader::load(&prepared, &cache)?
     } else {
+        // `VICTORY_UPSCALE=dlss`: the title's FidelityFX upscale by NVIDIA DLSS
+        // (a build with the `dlss` feature and the SDK); before the imports are bound.
+        if std::env::var("VICTORY_UPSCALE").is_ok_and(|v| v.trim().eq_ignore_ascii_case("dlss")) {
+            victory_hle::modules::fidelityfx::use_dlss().map_err(anyhow::Error::msg)?;
+        }
         victory_loader::load(&prepared, &images)?
     };
     // The program is mapped from the copy `load` wrote: the file's bytes

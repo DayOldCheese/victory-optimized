@@ -17,6 +17,7 @@ pub mod dsp;
 #[cfg(windows)]
 pub mod dstorage;
 #[cfg(windows)]
+pub mod dlss;
 pub mod fidelityfx;
 #[cfg(windows)]
 pub mod files;

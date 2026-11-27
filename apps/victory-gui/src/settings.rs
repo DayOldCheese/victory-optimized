@@ -20,6 +20,9 @@ pub struct Settings {
     /// Switches the user set by hand: variable -> value (an empty value
     /// means "off": the profile's value is not used).
     pub overrides: BTreeMap<String, String>,
+    /// A checkout of NVIDIA/DLSS (its `include` and `lib`), for builds with
+    /// DLSS; empty: looked for as `sdk\DLSS` beside the repository.
+    pub dlss_sdk: String,
 }
 
 fn file() -> Option<PathBuf> {
@@ -66,15 +69,53 @@ impl Settings {
 
     /// The environment a launch gets: the profile's switches with the
     /// overrides over them (an override that turns a switch off is "0").
+    /// With DLSS asked for, `VICTORY_DLSS_DIR` is the SDK's runtime folder
+    /// unless set by hand.
     pub fn launch_env(&self) -> Vec<(String, String)> {
         let profile = victory_core::profiles::Profile::parse(&self.profile).unwrap_or(victory_core::profiles::Profile::Play);
-        profile.env(&self.overrides)
+        let mut env = profile.env(&self.overrides);
+        let dlss = env.iter().any(|(k, v)| k == "VICTORY_UPSCALE" && v.eq_ignore_ascii_case("dlss"));
+        if dlss
+            && !env.iter().any(|(k, _)| k == "VICTORY_DLSS_DIR")
+            && let Some(sdk) = self.dlss_sdk_dir()
+        {
+            env.push(("VICTORY_DLSS_DIR".into(), sdk.join("lib").join("Windows_x86_64").join("rel").display().to_string()));
+        }
+        env
+    }
+
+    /// The DLSS SDK, if there is one: the one set, else `sdk\DLSS` beside
+    /// the repository. Only one with the NGX loader library counts.
+    pub fn dlss_sdk_dir(&self) -> Option<PathBuf> {
+        let set = PathBuf::from(&self.dlss_sdk);
+        let guess = self.repo.parent().map(|p| p.join("sdk").join("DLSS"));
+        let dir = if self.dlss_sdk.trim().is_empty() { guess? } else { set };
+        dir.join("lib").join("Windows_x86_64").join("x64").join("nvsdk_ngx_d.lib").is_file().then_some(dir)
     }
 }
 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_dlss_sdk_is_found_beside_the_repository_and_named_to_the_title() {
+        let top = tempfile::tempdir().unwrap();
+        let repo = top.path().join("Mandy");
+        std::fs::create_dir_all(&repo).unwrap();
+        let mut s = super::Settings { repo: repo.clone(), profile: "play".into(), ..Default::default() };
+        assert_eq!(s.dlss_sdk_dir(), None);
+        let lib = top.path().join("sdk").join("DLSS").join("lib").join("Windows_x86_64").join("x64");
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::write(lib.join("nvsdk_ngx_d.lib"), b"").unwrap();
+        assert_eq!(s.dlss_sdk_dir(), Some(top.path().join("sdk").join("DLSS")));
+        // Only with DLSS asked for does the title get the runtime's folder.
+        assert!(!s.launch_env().iter().any(|(k, _)| k == "VICTORY_DLSS_DIR"));
+        s.overrides.insert("VICTORY_UPSCALE".into(), "dlss".into());
+        let env = s.launch_env();
+        let dir = env.iter().find(|(k, _)| k == "VICTORY_DLSS_DIR").map(|(_, v)| v.clone()).unwrap();
+        assert!(dir.ends_with("rel"), "{dir}");
+    }
+
     #[test]
     fn an_empty_repo_path_is_replaced_by_the_workspace() {
         let s = super::Settings { repo: std::path::PathBuf::new(), ..Default::default() };

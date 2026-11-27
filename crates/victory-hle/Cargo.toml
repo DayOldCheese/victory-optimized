@@ -46,6 +46,10 @@ windows-core = { workspace = true, optional = true }
 tempfile.workspace = true
 
 [features]
+# NVIDIA DLSS for the title's upscale (`VICTORY_UPSCALE=dlss`). Links the
+# DLSS SDK named by VICTORY_DLSS_SDK at build time (see build.rs); without it
+# a stub. A build with the SDK is not for distribution (its licence).
+dlss = []
 # Debugging switches (scripted keys and the like).
 diagnostics = [
     "victory-gpu/diagnostics", "victory-loader/diagnostics", "dep:windows-core",
