@@ -613,7 +613,8 @@ impl App {
             ui.add_space(12.0);
             ui.heading("Graphics and debugging");
             ui.label("Only what the layer reads. Debug options slow a run down and are for finding faults.");
-            let extra: [(&str, &str, &str, bool); 15] = [
+            let extra: [(&str, &str, &str, bool); 16] = [
+                ("VICTORY_AMBIENT_MOST", "1", "Hides the boxy lighting without ray tracing: the game's stale light-probe blocks may be no brighter than Mandy's light estimate (default: 4 times). Outdoor sky light then follows the estimate too.", true),
                 ("VICTORY_CARD_WINDOWS_MB", "256", "Up to 256 MB of the title's vertex, index and constant windows copied to the card's memory, so draws stop reading them over the bus (part of Impre-visible's measured GTX 1660 settings).", true),
                 ("VICTORY_WINDOWS_BAR_MB", "512", "Needs Resizable BAR on in the BIOS: windows live in card memory the CPU writes directly (a captured frame went from 36 to 32 ms). The log says whether the card offers it.", true),
                 ("VICTORY_UPSCALE", "dlss", "NVIDIA DLSS in place of the title's own upscaler (needs a Build with the DLSS SDK beside the repository, sdk\\DLSS). The title's upscaler runs slowly translated on NVIDIA.", true),

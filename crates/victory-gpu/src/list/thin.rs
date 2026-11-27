@@ -248,7 +248,14 @@ impl Recording {
                 (chunk, inner.back as This)
             };
             let began = std::time::Instant::now();
+            #[cfg(feature = "diagnostics")]
+            let (wall0, ran0) = (per_op::now(), per_op::ran());
             let (calls, closed) = translate(back, &chunk, || self.abandoned.load(Acquire));
+            #[cfg(feature = "diagnostics")]
+            {
+                per_op::WALL.fetch_add(per_op::now().wrapping_sub(wall0), Relaxed);
+                per_op::RAN.fetch_add(per_op::ran().wrapping_sub(ran0), Relaxed);
+            }
             STATS[0].fetch_add(calls, Relaxed);
             STATS[1].fetch_add(began.elapsed().as_micros() as u64, Relaxed);
             let mut inner = held(&self.inner);
@@ -362,6 +369,38 @@ pub(crate) fn line(frames: f64) {
         CHUNKS.swap(0, Relaxed) as f64 / frames,
         s[3]
     );
+    #[cfg(feature = "diagnostics")]
+    per_op_line(frames, s[1]);
+}
+
+/// Where the translating threads' time went, per frame: the share they ran
+/// (the rest they waited on a lock, the card or another thread, or Windows
+/// gave their core to another), and the commands that took the most.
+#[cfg(feature = "diagnostics")]
+fn per_op_line(frames: f64, micros: f64) {
+    let wall = per_op::WALL.swap(0, Relaxed) as f64;
+    let ran = per_op::RAN.swap(0, Relaxed) as f64;
+    // Cycles per microsecond, from the chunks' own clock and time.
+    let per_us = if micros > 0.0 { wall / frames / micros } else { 0.0 };
+    let mut ops: Vec<(usize, u64, u64)> = (0..per_op::OPS)
+        .map(|i| (i, per_op::COUNT[i].swap(0, Relaxed), per_op::CYCLES[i].swap(0, Relaxed)))
+        .filter(|o| o.1 > 0)
+        .collect();
+    ops.sort_by_key(|a| std::cmp::Reverse(a.2));
+    let ms = |c: u64| if per_us > 0.0 { c as f64 / per_us / frames / 1000.0 } else { 0.0 };
+    let top: Vec<String> = ops
+        .iter()
+        .take(10)
+        .map(|&(i, n, c)| {
+            let each = if n > 0 && per_us > 0.0 { c as f64 / n as f64 / per_us } else { 0.0 };
+            format!("{} {:.0}x {:.1} ms ({:.1} us each)", op_name(i), n as f64 / frames, ms(c), each)
+        })
+        .collect();
+    tracing::info!(
+        "list translation per frame: the threads ran {:.0}% of their time (the rest waiting or not scheduled); by command: {}",
+        if wall > 0.0 { 100.0 * ran / wall } else { 0.0 },
+        top.join(", ")
+    );
 }
 
 #[inline]
@@ -428,6 +467,9 @@ macro_rules! plain {
         #[allow(clippy::upper_case_acronyms, non_camel_case_types)]
         #[repr(u64)]
         enum Plain { $($op),* , END }
+        /// Their names, by number (for the diagnostic line).
+        #[cfg(feature = "diagnostics")]
+        const PLAIN_NAMES: &[&str] = &[$(stringify!($op)),*];
         $(extern "system" fn $name(this: This $(, $a: $t)*) {
             front(this).put(Plain::$op as u64, &[$(Word::word($a)),*]);
         })*
@@ -499,6 +541,58 @@ const TARGETS: u64 = after(13);
 const CLEAR_RTV: u64 = after(14);
 const CLEAR_DSV: u64 = after(15);
 const COPY_TEXTURE: u64 = after(16);
+
+/// A command's name, by number (for the diagnostic line).
+#[cfg(feature = "diagnostics")]
+fn op_name(op: usize) -> &'static str {
+    const MORE: [&str; 17] = [
+        "RESET", "CLOSE", "UPLOAD", "BARRIER", "BARRIER_GROUPS", "VIEWPORTS", "SCISSORS", "BLEND_FACTOR", "HEAPS",
+        "COMPUTE_CONSTANTS", "GRAPHICS_CONSTANTS", "INDEX_BUFFER", "VERTEX_BUFFERS", "TARGETS", "CLEAR_RTV",
+        "CLEAR_DSV", "COPY_TEXTURE",
+    ];
+    PLAIN_NAMES.get(op).or_else(|| MORE.get(op.wrapping_sub(Plain::END as usize))).copied().unwrap_or("?")
+}
+
+/// Per command, since the last line (diagnostics only): how many, and the
+/// clock cycles they took on the translating threads.
+#[cfg(feature = "diagnostics")]
+mod per_op {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    pub(super) const OPS: usize = 64;
+    pub(super) static COUNT: [AtomicU64; OPS] = [const { AtomicU64::new(0) }; OPS];
+    pub(super) static CYCLES: [AtomicU64; OPS] = [const { AtomicU64::new(0) }; OPS];
+    /// Over all chunks: clock cycles that passed, and those the translating
+    /// threads themselves ran (the rest: they were waiting or not scheduled).
+    pub(super) static WALL: AtomicU64 = AtomicU64::new(0);
+    pub(super) static RAN: AtomicU64 = AtomicU64::new(0);
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn QueryThreadCycleTime(thread: *mut std::ffi::c_void, cycles: *mut u64) -> i32;
+        fn GetCurrentThread() -> *mut std::ffi::c_void;
+    }
+
+    /// The cycles this thread has run so far.
+    pub(super) fn ran() -> u64 {
+        let mut c = 0u64;
+        // SAFETY: the pseudo handle of this thread and a valid out pointer.
+        unsafe { QueryThreadCycleTime(GetCurrentThread(), &mut c) };
+        c
+    }
+
+    #[inline]
+    pub(super) fn now() -> u64 {
+        // SAFETY: x86_64 always has the time-stamp counter.
+        unsafe { std::arch::x86_64::_rdtsc() }
+    }
+
+    #[inline]
+    pub(super) fn note(op: u64, cycles: u64) {
+        let i = (op as usize).min(OPS - 1);
+        COUNT[i].fetch_add(1, Relaxed);
+        CYCLES[i].fetch_add(cycles, Relaxed);
+    }
+}
 
 /// The bytes of `count` things at `items` (none if null).
 fn bytes_of<'a, T>(items: *const T, count: usize) -> &'a [u8] {
@@ -708,6 +802,16 @@ extern "system" fn copy_texture_region_x(
     copy_texture_region(this, dst, x, y, z, src, source_box);
 }
 
+/// Notes a command's cycles when it is done (whichever way it ends).
+#[cfg(feature = "diagnostics")]
+struct Timed(u64, u64);
+#[cfg(feature = "diagnostics")]
+impl Drop for Timed {
+    fn drop(&mut self) {
+        per_op::note(self.0, per_op::now().wrapping_sub(self.1));
+    }
+}
+
 /// Makes the calls of a stream on `list`: how many, and whether the last one
 /// closed it. Once `left` says so only what must not be lost is done.
 fn translate(list: This, stream: &[u64], left: impl Fn() -> bool) -> (u64, bool) {
@@ -732,6 +836,10 @@ fn translate(list: This, stream: &[u64], left: impl Fn() -> bool) -> (u64, bool)
         if skip && op != CLOSE && op != RESET {
             continue;
         }
+        #[cfg(feature = "diagnostics")]
+        let t0 = per_op::now();
+        #[cfg(feature = "diagnostics")]
+        let _timed = Timed(op, t0);
         if run_plain(op, list, w) {
             continue;
         }

@@ -102,6 +102,23 @@ pub(crate) fn on() -> bool {
     set() != Set::Off && !crate::pipeline::builder_runs()
 }
 
+/// The most the title's own resolve may leave, as a multiple of the estimate
+/// (`VICTORY_AMBIENT_MOST=<multiple>`; unset: 4). What it leaves past the
+/// sky's light is the probes' stale memory, in blocks of the picture's tiles:
+/// at 1 no block is brighter than the estimate around it, so none shows; the
+/// sky's light outdoors is then the estimate's too.
+fn most() -> f32 {
+    static SET: OnceLock<f32> = OnceLock::new();
+    *SET.get_or_init(|| {
+        let set = std::env::var("VICTORY_AMBIENT_MOST").unwrap_or_default();
+        let most = set.trim().parse().ok().filter(|v: &f32| v.is_finite() && *v >= 0.0).unwrap_or(4.0);
+        if !set.is_empty() {
+            tracing::info!(most, "the title's leftover light is bounded by this multiple of the stand-in's estimate (VICTORY_AMBIENT_MOST)");
+        }
+        most
+    })
+}
+
 /// The most the air scatters, as a multiple of the light around
 /// (`VICTORY_AMBIENT_AIR=<multiple>`; unset or 0: what the title has).
 fn air() -> f32 {
@@ -570,7 +587,7 @@ pub(crate) fn after(list: &HostList, role: Role, views: &Views) -> bool {
     words[6] = views.size[0];
     words[7] = views.size[1];
     words[8] = follow(role).to_bits();
-    words[9] = 4.0f32.to_bits();
+    words[9] = most().to_bits();
     words[10] = air().to_bits();
     words[11] = u32::from(crate::lightprobe::on());
     words[12] = settle().map_or(0.0, |s| s.jump).to_bits();

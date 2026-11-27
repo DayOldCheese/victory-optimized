@@ -72,10 +72,27 @@ pub const SAFE: &[Switch] = &[
 /// without crossing the bus and the card compares them itself. Measured by
 /// Maykzera/victory-rtx3060 on an RTX 5070 in Series S at half scale: 11.0 to
 /// 21.8 fps from these two alone; 14-17 fps on an RTX 3060 with a Ryzen 5
-/// 5600X with their whole set. Not yet measured here.
+/// 5600X with their whole set (whose helper-thread counts and lighting bounds
+/// are below too). Measured here with the first two: 1.7-3.1 fps with the
+/// pipelines not made ahead; the rest not yet.
 pub const FAST: &[Switch] = &[
     x("VICTORY_CARD_BUFFERS_MIN_MB", "1", "Title buffers from 1 MB up are copied to the card's memory (16 MB up by default on cards up to 12 GB)."),
     x("VICTORY_CARD_BUFFERS_MB", "1536", "Up to 1.5 GB of them (512 MB by default on cards up to 12 GB)."),
+    // Helper threads for a 6-core processor: by default the layer starts 8
+    // list translators, 6 landing and 6 view threads and 8 pipeline workers
+    // beside the title's own threads; on a Ryzen 5 5600X the process then ran
+    // about 5.9 cores' worth a frame and list calls took 76 us each. These are
+    // Maykzera/victory-rtx3060's play-nvidia.ps1 counts, measured on an RTX
+    // 3060 with a Ryzen 5 5600X ("more helper threads are worse", round 19).
+    x("VICTORY_THIN_THREADS", "4", "4 threads translate the title's list calls (8 by default): fewer threads fighting over a 6-core processor."),
+    x("VICTORY_UNDER_THREADS", "3", "3 threads land what the card wrote (6 by default)."),
+    x("VICTORY_VIEW_THREADS", "3", "3 threads look over the heaps' views (6 by default)."),
+    x("VICTORY_PIPELINE_WORKERS", "4", "4 threads make pipelines (two thirds of the logical processors by default: 8 on a 5600X). Warm Pipelines first."),
+    x("VICTORY_SUBMIT_FRAMES", "2", "Submissions may run up to 2 frames ahead of the card (1 by default)."),
+    x("VICTORY_JOIN_LISTS", "96", "Up to 96 of the title's lists joined into one submission (48 by default)."),
+    // Picture: Maykzera's bounds for the lighting stand-in without rays.
+    x("VICTORY_AMBIENT_MOST", "2", "The game's stale light-probe blocks no more than twice the light estimate (4 by default): fewer boxes. 1 hides them all."),
+    x("VICTORY_AMBIENT_AIR", "1.5", "Fog lit no more than 1.5 times the light around (unbounded by default): rooms less hazy without ray tracing."),
 ];
 
 /// What "ray tracing" adds to "play" (`play.ps1 -RayTracing`).
