@@ -15,8 +15,6 @@ use crate::policy::ensure_outside_repo;
 pub struct Config {
     /// The user's dump of the title.
     pub game_dir: Option<PathBuf>,
-    /// Folder containing the PC FidelityFX upscaler for the optional FSR profile.
-    pub fidelityfx_dir: Option<PathBuf>,
     /// Root for all derived data. Always outside the repository.
     pub cache_dir: PathBuf,
     /// What titles write and must keep (persistent local storage). Never
@@ -39,7 +37,6 @@ struct FileConfig {
 #[serde(deny_unknown_fields)]
 struct FilePaths {
     game_dir: Option<PathBuf>,
-    fidelityfx_dir: Option<PathBuf>,
     cache_dir: Option<PathBuf>,
     data_dir: Option<PathBuf>,
     #[serde(default)]
@@ -96,7 +93,6 @@ impl Config {
             .map_or_else(|| default_dir("data"), Ok)?;
         Ok(Config {
             game_dir: env_path("VICTORY_GAME_DIR").or(file.game_dir),
-            fidelityfx_dir: env_path("VICTORY_FIDELITYFX_DIR").or(file.fidelityfx_dir),
             cache_dir,
             data_dir,
             test_titles,
@@ -138,8 +134,19 @@ fn subdir(root: &Path, sub: &str) -> Result<PathBuf> {
     Ok(dir)
 }
 
-/// `%LOCALAPPDATA%/victory/<name>` (elsewhere the XDG or home cache).
+/// The folder for everything of ours (settings, logs, caches, saves,
+/// downloads) when `VICTORY_HOME` names one: for a full C: drive, e.g.
+/// `setx VICTORY_HOME D:\victory`. Else `%LOCALAPPDATA%\victory`.
+pub fn home_override() -> Option<PathBuf> {
+    std::env::var_os("VICTORY_HOME").filter(|v| !v.is_empty()).map(PathBuf::from)
+}
+
+/// `%LOCALAPPDATA%/victory/<name>` (elsewhere the XDG or home cache), or
+/// `VICTORY_HOME/<name>`.
 fn default_dir(name: &str) -> Result<PathBuf> {
+    if let Some(home) = home_override() {
+        return Ok(home.join(name));
+    }
     let base = std::env::var_os("LOCALAPPDATA")
         .or_else(|| std::env::var_os("XDG_CACHE_HOME"))
         .map(PathBuf::from)
