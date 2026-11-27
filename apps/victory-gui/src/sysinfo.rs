@@ -136,8 +136,8 @@ mod imp {
         }
     }
 
-    /// The first hardware adapter's dedicated memory and name.
-    fn adapter() -> Option<(f64, String)> {
+    /// The first hardware adapter's dedicated memory (GB) and name.
+    pub fn adapter() -> Option<(f64, String)> {
         use windows::Win32::Graphics::Dxgi::*;
         // SAFETY: plain DXGI queries.
         unsafe {
@@ -157,7 +157,13 @@ mod imp {
 }
 
 #[cfg(windows)]
-pub use imp::Sampler;
+pub use imp::{Sampler, adapter};
+
+/// The first hardware adapter's dedicated memory (GB) and name.
+#[cfg(not(windows))]
+pub fn adapter() -> Option<(f64, String)> {
+    None
+}
 
 #[cfg(not(windows))]
 pub struct Sampler;

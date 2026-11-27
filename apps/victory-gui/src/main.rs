@@ -11,6 +11,7 @@ mod export;
 mod frames;
 mod git;
 mod jobs;
+mod optimal;
 mod progress;
 mod settings;
 mod sysinfo;
@@ -50,6 +51,8 @@ type Pending<T> = Arc<Mutex<Option<T>>>;
 struct App {
     s: settings::Settings,
     tab: Tab,
+    /// This PC, for the launch [`optimal::plan`] picks.
+    hardware: optimal::Hardware,
     /// cargo or git work; one at a time.
     task: Option<Job>,
     /// The running title.
@@ -87,6 +90,7 @@ impl App {
         let s = settings::Settings::load();
         let mut app = App {
             tab: Tab::Dashboard,
+            hardware: optimal::Hardware::here(),
             task: None,
             game: None,
             build: Outcome::default(),
@@ -233,22 +237,20 @@ impl App {
             return;
         }
         self.frames = frames::Follower::default();
+        let plan = optimal::plan(optimal::Graphics::parse(&self.s.vn_graphics), &self.hardware);
+        // The switches the launcher takes only from its settings file.
+        let file = dir.join("victory-settings.txt");
+        let text = std::fs::read_to_string(&file).unwrap_or_default();
+        if let Err(e) = std::fs::write(&file, optimal::apply(&text, &plan)) {
+            self.say(BAD, format!("{}: {e}", file.display()));
+            return;
+        }
         let script = dir.join("scripts").join("play-nvidia.ps1").display().to_string();
-        let mut args: Vec<String> = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", &script, "-Exe", &self.s.game_exe, "-Dlss", &self.s.vn_dlss]
-            .iter()
-            .map(|a| a.to_string())
-            .collect();
-        if self.s.vn_series_s {
-            args.push("-SeriesS".into());
-        }
-        if self.s.vn_preload {
-            args.push("-Preload".into());
-        }
-        if self.s.vn_no_framegen {
-            args.push("-NoFrameGenReady".into());
-        }
+        let mut args: Vec<String> =
+            ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", &script, "-Exe", &self.s.game_exe].iter().map(|a| a.to_string()).collect();
+        args.extend(plan.args.iter().cloned());
         self.game = Some(Job::start("Title", &dir, "powershell", &args, &[]));
-        self.say(ACCENT, format!("VIctory-NVIDIA started ({}, DLSS {})", if self.s.vn_series_s { "Series S" } else { "Series X 1440p" }, self.s.vn_dlss));
+        self.say(ACCENT, format!("VIctory-NVIDIA started: {} ({})", plan.graphics.label(), plan.args.join(" ")));
         self.tab = Tab::Diagnostics;
     }
 
@@ -571,36 +573,32 @@ impl App {
                 None => RichText::new("not found").color(BAD),
             });
         });
-        ui.horizontal(|ui| {
-            if ui.checkbox(&mut self.s.vn_series_s, "Series S (lighter on video memory, softer)").changed() {
-                let _ = self.s.save();
-            }
-            ui.label("DLSS");
-            let before = self.s.vn_dlss.clone();
-            egui::ComboBox::from_id_salt("vn_dlss").selected_text(self.s.vn_dlss.clone()).show_ui(ui, |ui| {
-                for m in ["off", "dlaa", "quality", "balanced", "performance"] {
-                    ui.selectable_value(&mut self.s.vn_dlss, m.to_owned(), m);
-                }
+        ui.add_space(4.0);
+        ui.strong("Graphics");
+        let before = self.s.vn_graphics.clone();
+        for g in optimal::Graphics::ALL {
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut self.s.vn_graphics, g.name().to_owned(), RichText::new(g.label()).strong());
+                ui.label(RichText::new(g.note()).small());
             });
-            if self.s.vn_dlss != before {
-                let _ = self.s.save();
-            }
-            if ui
-                .checkbox(&mut self.s.vn_preload, "Preload shaders first")
-                .on_hover_text("-Preload: every shader and the pipelines earlier runs used are made before the game starts (minutes), so the driver compiles nothing while you play")
-                .changed()
-            {
-                let _ = self.s.save();
-            }
-            if ui
-                .checkbox(&mut self.s.vn_no_framegen, "No frame generation (more room for textures)")
-                .on_hover_text("-NoFrameGenReady: frame generation is not made ready, so textures may use the card's memory budget less 768 MB (about 93% on a 12 GB card) instead of 86% of it (F1's frame generation is then unavailable)")
-                .changed()
-            {
-                let _ = self.s.save();
-            }
-        });
-        ui.label(RichText::new("The first launch of a new build compiles pipelines and restarts itself once: judge the second launch.").small());
+        }
+        if self.s.vn_graphics != before {
+            let _ = self.s.save();
+        }
+        let plan = optimal::plan(optimal::Graphics::parse(&self.s.vn_graphics), &self.hardware);
+        ui.label(
+            RichText::new(format!(
+                "For {} ({:.0} GB) and {} processor threads: {}; shaders made before the game{}{}.",
+                if self.hardware.gpu_name.is_empty() { "this card" } else { &self.hardware.gpu_name },
+                self.hardware.vram_gb,
+                self.hardware.threads,
+                plan.graphics.label(),
+                if self.hardware.frame_generation() { "; frame generation ready (F1)" } else { "; all of the card's memory for textures" },
+                if plan.set.iter().any(|(k, _)| k == "VICTORY_THIN_THREADS") { "; helper threads for this processor" } else { "" },
+            ))
+            .small(),
+        );
+        ui.label(RichText::new("The first launch of a new build compiles for a few minutes and restarts itself once.").small());
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             if ui.button(RichText::new("Launch Game").strong()).clicked() {
@@ -893,12 +891,16 @@ impl App {
                 let mut text = String::from(if full { "Mandy diagnostic log (full)\n" } else { "Mandy diagnostic log (compact)\n" });
                 text += &format!("branch {} at {}\n", self.git_branch, self.git_head);
                 if self.s.uses_vn() {
+                    let plan = optimal::plan(optimal::Graphics::parse(&self.s.vn_graphics), &self.hardware);
                     text += &format!(
-                        "layer VIctory-NVIDIA ({}) through its launcher: {}, DLSS {}, preload {} (its switches are in its own log)\n",
+                        "layer VIctory-NVIDIA ({}) through its launcher: {} for {} ({:.0} GB, {} threads): {}; settings file {} (its switches are in its own log)\n",
                         self.s.vn_checkout().map(|d| d.display().to_string()).unwrap_or_default(),
-                        if self.s.vn_series_s { "Series S" } else { "Series X" },
-                        self.s.vn_dlss,
-                        self.s.vn_preload
+                        plan.graphics.label(),
+                        self.hardware.gpu_name,
+                        self.hardware.vram_gb,
+                        self.hardware.threads,
+                        plan.args.join(" "),
+                        plan.set.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(" ")
                     );
                 } else {
                     text += &format!(

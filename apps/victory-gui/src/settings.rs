@@ -29,17 +29,26 @@ pub struct Settings {
     pub layer: String,
     /// That checkout; empty: `mandy-vn` beside the repository.
     pub vn_dir: String,
-    /// Its Series S profile (`-SeriesS`): lighter on video memory.
-    pub vn_series_s: bool,
-    /// Its DLSS mode (`-Dlss`): off, dlaa, quality, balanced, performance.
-    pub vn_dlss: String,
-    /// Its `-Preload`: every shader and the pipelines earlier runs used made
-    /// before the game starts, so none is compiled while playing.
-    pub vn_preload: bool,
-    /// Its `-NoFrameGenReady`: frame generation not made ready, so the card's
-    /// texture room is not cut to 86% of its budget for it.
-    pub vn_no_framegen: bool,
+    /// The graphics preset for it (`crate::optimal::Graphics`); the rest of
+    /// the launch is picked from the hardware.
+    pub vn_graphics: String,
 }
+
+/// Helper threads for a 6-core processor in VIctory-NVIDIA. Its defaults
+/// start 8 list translators, 6 landing and 6 view threads and 8 pipeline
+/// workers beside the title's own threads; these are the counts
+/// Maykzera/victory-rtx3060 measured best on an RTX 3060 with a Ryzen 5
+/// 5600X ("more helper threads are worse"), and the helpers run at the
+/// submitting thread's raised priority (its own `VICTORY_HELPER_PRIORITY`:
+/// its notes saw them woken and not running for 4-11 ms a frame while the
+/// title's workers held every processor; scarlet-fps f52eefb82 does the same).
+pub const SIX_CORES: [(&str, &str); 5] = [
+    ("VICTORY_THIN_THREADS", "4"),
+    ("VICTORY_UNDER_THREADS", "3"),
+    ("VICTORY_VIEW_THREADS", "3"),
+    ("VICTORY_PIPELINE_WORKERS", "4"),
+    ("VICTORY_HELPER_PRIORITY", "1"),
+];
 
 fn file() -> Option<PathBuf> {
     let base = std::env::var_os("APPDATA")?;
@@ -74,9 +83,7 @@ impl Settings {
         if !matches!(s.layer.as_str(), "mandy" | "vnvidia") {
             s.layer = "mandy".into();
         }
-        if !matches!(s.vn_dlss.as_str(), "off" | "dlaa" | "quality" | "balanced" | "performance") {
-            s.vn_dlss = "quality".into();
-        }
+        s.vn_graphics = crate::optimal::Graphics::parse(&s.vn_graphics).name().to_owned();
         s
     }
 
@@ -130,6 +137,7 @@ impl Settings {
 
 #[cfg(test)]
 mod tests {
+
     #[test]
     fn the_dlss_sdk_is_found_beside_the_repository_and_named_to_the_title() {
         let top = tempfile::tempdir().unwrap();
