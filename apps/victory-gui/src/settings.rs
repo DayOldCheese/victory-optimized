@@ -23,6 +23,16 @@ pub struct Settings {
     /// A checkout of NVIDIA/DLSS (its `include` and `lib`), for builds with
     /// DLSS; empty: looked for as `sdk\DLSS` beside the repository.
     pub dlss_sdk: String,
+    /// Which layer Launch runs: `mandy` (this repository's own) or
+    /// `vnvidia`: a checkout of trustno1-coder/VIctory-NVIDIA (foxhound's
+    /// line), started through its own launcher with its tested settings.
+    pub layer: String,
+    /// That checkout; empty: `mandy-vn` beside the repository.
+    pub vn_dir: String,
+    /// Its Series S profile (`-SeriesS`): lighter on video memory.
+    pub vn_series_s: bool,
+    /// Its DLSS mode (`-Dlss`): off, dlaa, quality, balanced, performance.
+    pub vn_dlss: String,
 }
 
 fn file() -> Option<PathBuf> {
@@ -55,6 +65,12 @@ impl Settings {
         if victory_core::profiles::Profile::parse(&s.profile).is_none() {
             s.profile = "play".into();
         }
+        if !matches!(s.layer.as_str(), "mandy" | "vnvidia") {
+            s.layer = "mandy".into();
+        }
+        if !matches!(s.vn_dlss.as_str(), "off" | "dlaa" | "quality" | "balanced" | "performance") {
+            s.vn_dlss = "quality".into();
+        }
         s
     }
 
@@ -82,6 +98,17 @@ impl Settings {
             env.push(("VICTORY_DLSS_DIR".into(), sdk.join("lib").join("Windows_x86_64").join("rel").display().to_string()));
         }
         env
+    }
+
+    /// The VIctory-NVIDIA checkout, if there is one (with its launcher).
+    pub fn vn_checkout(&self) -> Option<PathBuf> {
+        let dir = if self.vn_dir.trim().is_empty() { self.repo.parent()?.join("mandy-vn") } else { PathBuf::from(self.vn_dir.trim()) };
+        dir.join("scripts").join("play-nvidia.ps1").is_file().then_some(dir)
+    }
+
+    /// Whether Launch runs VIctory-NVIDIA.
+    pub fn uses_vn(&self) -> bool {
+        self.layer == "vnvidia"
     }
 
     /// The DLSS SDK, if there is one: the one set, else `sdk\DLSS` beside

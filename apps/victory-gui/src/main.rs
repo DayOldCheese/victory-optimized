@@ -136,12 +136,17 @@ impl App {
     }
 
     fn start_task_env(&mut self, name: &str, program: &str, args: &[&str], env: &[(String, String)]) {
+        let repo = self.s.repo.clone();
+        self.start_task_in(name, &repo, program, args, env);
+    }
+
+    fn start_task_in(&mut self, name: &str, dir: &std::path::Path, program: &str, args: &[&str], env: &[(String, String)]) {
         if self.busy() {
             self.say(WARN, "another task is still running");
             return;
         }
         let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-        self.task = Some(Job::start(name, &self.s.repo, program, &args, env));
+        self.task = Some(Job::start(name, dir, program, &args, env));
         self.say(ACCENT, format!("{name} started"));
     }
 
@@ -211,9 +216,43 @@ impl App {
         }
     }
 
+    /// VIctory-NVIDIA through its own launcher (`scripts/play-nvidia.ps1`),
+    /// which applies its F1 menu's saved choices and its tested switches,
+    /// and makes its pipelines before the game starts.
+    fn launch_vn(&mut self) {
+        let Some(dir) = self.s.vn_checkout() else {
+            self.say(BAD, "no VIctory-NVIDIA checkout (mandy-vn beside the repository, or set its folder)");
+            return;
+        };
+        if !dir.join("target").join("release").join("victory.exe").is_file() {
+            self.say(BAD, "VIctory-NVIDIA is not built yet: press Build VIctory-NVIDIA first");
+            return;
+        }
+        if !std::path::Path::new(&self.s.game_exe).is_file() {
+            self.say(BAD, "choose the title's executable first (Play > Browse)");
+            return;
+        }
+        self.frames = frames::Follower::default();
+        let script = dir.join("scripts").join("play-nvidia.ps1").display().to_string();
+        let mut args: Vec<String> = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", &script, "-Exe", &self.s.game_exe, "-Dlss", &self.s.vn_dlss]
+            .iter()
+            .map(|a| a.to_string())
+            .collect();
+        if self.s.vn_series_s {
+            args.push("-SeriesS".into());
+        }
+        self.game = Some(Job::start("Title", &dir, "powershell", &args, &[]));
+        self.say(ACCENT, format!("VIctory-NVIDIA started ({}, DLSS {})", if self.s.vn_series_s { "Series S" } else { "Series X 1440p" }, self.s.vn_dlss));
+        self.tab = Tab::Diagnostics;
+    }
+
     fn launch(&mut self) {
         if self.game.as_ref().is_some_and(Job::running) {
             self.say(WARN, "the title is already running");
+            return;
+        }
+        if self.s.uses_vn() {
+            self.launch_vn();
             return;
         }
         let exe = self.victory_exe();
@@ -490,6 +529,103 @@ impl App {
             ui.label("Arguments");
             ui.add(egui::TextEdit::singleline(&mut self.s.game_args).desired_width(520.0).hint_text("passed to the title after --"));
         });
+        ui.add_space(8.0);
+        ui.heading("Layer");
+        let before = self.s.layer.clone();
+        ui.horizontal(|ui| {
+            ui.radio_value(&mut self.s.layer, "mandy".to_owned(), RichText::new("Mandy").strong());
+            ui.label(RichText::new("This repository's layer, with the profiles below.").small());
+        });
+        ui.horizontal(|ui| {
+            ui.radio_value(&mut self.s.layer, "vnvidia".to_owned(), RichText::new("VIctory-NVIDIA (foxhound)").strong());
+            ui.label(RichText::new("trustno1-coder/VIctory-NVIDIA through its own launcher and tested settings: DLSS, light estimate, frame generation (F1 in game, F3 stats).").small());
+        });
+        if self.s.layer != before {
+            let _ = self.s.save();
+        }
+        if self.s.uses_vn() {
+            self.vn_options(ui);
+        } else {
+            self.mandy_options(ui);
+        }
+    }
+
+    /// The Play tab's part for VIctory-NVIDIA.
+    fn vn_options(&mut self, ui: &mut egui::Ui) {
+        let dir = self.s.vn_checkout();
+        ui.horizontal(|ui| {
+            ui.label("Checkout");
+            let hint = self.s.repo.parent().map(|p| p.join("mandy-vn").display().to_string()).unwrap_or_default();
+            if ui.add(egui::TextEdit::singleline(&mut self.s.vn_dir).desired_width(420.0).hint_text(hint)).changed() {
+                let _ = self.s.save();
+            }
+            ui.label(match &dir {
+                Some(d) if d.join("target").join("release").join("victory.exe").is_file() => RichText::new("built").color(GOOD),
+                Some(_) => RichText::new("not built").color(WARN),
+                None => RichText::new("not found").color(BAD),
+            });
+        });
+        ui.horizontal(|ui| {
+            if ui.checkbox(&mut self.s.vn_series_s, "Series S (lighter on video memory, softer)").changed() {
+                let _ = self.s.save();
+            }
+            ui.label("DLSS");
+            let before = self.s.vn_dlss.clone();
+            egui::ComboBox::from_id_salt("vn_dlss").selected_text(self.s.vn_dlss.clone()).show_ui(ui, |ui| {
+                for m in ["off", "dlaa", "quality", "balanced", "performance"] {
+                    ui.selectable_value(&mut self.s.vn_dlss, m.to_owned(), m);
+                }
+            });
+            if self.s.vn_dlss != before {
+                let _ = self.s.save();
+            }
+        });
+        ui.label(RichText::new("The first launch of a new build compiles pipelines and restarts itself once: judge the second launch.").small());
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            if ui.button(RichText::new("Launch Game").strong()).clicked() {
+                let _ = self.s.save();
+                self.launch();
+            }
+            let running = self.game.as_ref().is_some_and(Job::running);
+            if ui.add_enabled(running, egui::Button::new(RichText::new("Stop").color(BAD))).clicked()
+                && let Some(g) = &self.game
+            {
+                g.stop();
+            }
+            let can = !self.busy() && dir.is_some();
+            if ui.add_enabled(can, egui::Button::new("Build VIctory-NVIDIA")).on_hover_text("cargo build --release --locked -p victory in the checkout").clicked()
+                && let Some(d) = &dir
+            {
+                self.start_task_in("Build VIctory-NVIDIA", d, "cargo", &["build", "--release", "--locked", "-p", "victory"], &[]);
+            }
+            if ui
+                .add_enabled(can, egui::Button::new("Get NVIDIA DLSS files"))
+                .on_hover_text("The checkout's scripts/get-nvidia-sdks.ps1: NVIDIA's Streamline and DLSS files (about 70 MB) from NVIDIA's own GitHub into its nvidia-sdk folder. NVIDIA's licences; never part of the repository.")
+                .clicked()
+                && let Some(d) = &dir
+            {
+                let script = d.join("scripts").join("get-nvidia-sdks.ps1").display().to_string();
+                self.start_task_in("Get NVIDIA DLSS files", d, "powershell", &["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", &script], &[]);
+            }
+            if ui.button("Open its logs").clicked()
+                && let Some(base) = std::env::var_os("LOCALAPPDATA")
+            {
+                let logs = std::path::PathBuf::from(base).join("victory").join("logs");
+                let _ = std::process::Command::new("explorer").arg(&logs).spawn();
+            }
+        });
+        if let Some(t) = &self.task {
+            task_status(ui, t);
+        }
+        if let Some(g) = &self.game {
+            let (c, s) = state_text(&Some(g.state()));
+            ui.label(RichText::new(format!("Title: {s}")).color(c));
+        }
+    }
+
+    /// The Play tab's part for Mandy's own layer.
+    fn mandy_options(&mut self, ui: &mut egui::Ui) {
         ui.add_space(8.0);
         ui.heading("Profile");
         for p in Profile::ALL {
