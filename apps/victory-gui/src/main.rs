@@ -254,6 +254,44 @@ impl App {
         self.tab = Tab::Diagnostics;
     }
 
+    /// VIctory-Hydra through its own launcher (`Play-VIctory.cmd`, which
+    /// keeps any switch already set), with the preset and the hardware's
+    /// switches over its measured defaults.
+    fn launch_hydra(&mut self) {
+        let Some(dir) = self.s.hydra_checkout() else {
+            self.say(BAD, "no VIctory-Hydra checkout (mandy-hydra beside the repository)");
+            return;
+        };
+        let built = dir.join("target").join("release");
+        if !built.join("victory.exe").is_file() {
+            self.say(BAD, "VIctory-Hydra is not built yet: press Build VIctory-Hydra first");
+            return;
+        }
+        if !built.join("D3D12").join("D3D12Core.dll").is_file() {
+            self.say(BAD, "VIctory-Hydra needs Direct3D 12 1.620.2 beside its build: press Get Direct3D 12 first");
+            return;
+        }
+        let Some(game_dir) = std::path::Path::new(&self.s.game_exe).parent().filter(|_| std::path::Path::new(&self.s.game_exe).is_file()) else {
+            self.say(BAD, "choose the title's executable first (Play > Browse)");
+            return;
+        };
+        // NVIDIA's and AMD's files: its own folders, else VIctory-NVIDIA's.
+        let find = |rel: &[&str], file: &str| {
+            [Some(dir.clone()), self.s.vn_checkout()].into_iter().flatten().map(|d| rel.iter().fold(d, |p, r| p.join(r))).find(|d| d.join(file).is_file()).map(|d| d.display().to_string())
+        };
+        let paths = optimal::HydraPaths {
+            game_dir: game_dir.display().to_string(),
+            streamline: find(&["nvidia-sdk", "Streamline", "bin", "x64"], "sl.interposer.dll"),
+            fidelityfx: find(&["amd-sdk", "FidelityFX", "bin"], "amd_fidelityfx_framegeneration_dx12.dll"),
+        };
+        let (graphics, env) = optimal::hydra_env(optimal::Graphics::parse(&self.s.vn_graphics), &self.hardware, &paths);
+        self.frames = frames::Follower::default();
+        let args = ["/c".to_owned(), "Play-VIctory.cmd".to_owned()];
+        self.game = Some(Job::start("Title", &dir, "cmd", &args, &env));
+        self.say(ACCENT, format!("VIctory-Hydra started: {}{}", graphics.label(), if paths.streamline.is_some() { ", DLSS" } else { "" }));
+        self.tab = Tab::Diagnostics;
+    }
+
     fn launch(&mut self) {
         if self.game.as_ref().is_some_and(Job::running) {
             self.say(WARN, "the title is already running");
@@ -261,6 +299,10 @@ impl App {
         }
         if self.s.uses_vn() {
             self.launch_vn();
+            return;
+        }
+        if self.s.uses_hydra() {
+            self.launch_hydra();
             return;
         }
         let exe = self.victory_exe();
@@ -548,13 +590,101 @@ impl App {
             ui.radio_value(&mut self.s.layer, "vnvidia".to_owned(), RichText::new("VIctory-NVIDIA (foxhound)").strong());
             ui.label(RichText::new("trustno1-coder/VIctory-NVIDIA through its own launcher and tested settings: DLSS, light estimate, frame generation (F1 in game, F3 stats).").small());
         });
+        ui.horizontal(|ui| {
+            ui.radio_value(&mut self.s.layer, "hydra".to_owned(), RichText::new("VIctory-Hydra").strong());
+            ui.label(RichText::new("ToLIManl/VIctory-Hydra: cool_fox's line with the community's processor work, measured at 17-31 fps on an RTX 3060 with a Ryzen 5 5600X.").small());
+        });
         if self.s.layer != before {
             let _ = self.s.save();
         }
         if self.s.uses_vn() {
             self.vn_options(ui);
+        } else if self.s.uses_hydra() {
+            self.hydra_options(ui);
         } else {
             self.mandy_options(ui);
+        }
+    }
+
+    /// The graphics preset, shared by VIctory-NVIDIA and VIctory-Hydra.
+    fn graphics_choice(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(4.0);
+        ui.strong("Graphics");
+        let before = self.s.vn_graphics.clone();
+        for g in optimal::Graphics::ALL {
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut self.s.vn_graphics, g.name().to_owned(), RichText::new(g.label()).strong());
+                ui.label(RichText::new(g.note()).small());
+            });
+        }
+        if self.s.vn_graphics != before {
+            let _ = self.s.save();
+        }
+    }
+
+    /// The Play tab's part for VIctory-Hydra.
+    fn hydra_options(&mut self, ui: &mut egui::Ui) {
+        let dir = self.s.hydra_checkout();
+        let built = dir.as_ref().map(|d| d.join("target").join("release"));
+        let exe = built.as_ref().is_some_and(|b| b.join("victory.exe").is_file());
+        let d3d12 = built.as_ref().is_some_and(|b| b.join("D3D12").join("D3D12Core.dll").is_file());
+        ui.horizontal(|ui| {
+            ui.label("Checkout");
+            if ui.add(egui::TextEdit::singleline(&mut self.s.hydra_dir).desired_width(420.0).hint_text("mandy-hydra beside the repository")).changed() {
+                let _ = self.s.save();
+            }
+            ui.label(match (&dir, exe, d3d12) {
+                (None, _, _) => RichText::new("not found").color(BAD),
+                (_, false, _) => RichText::new("not built").color(WARN),
+                (_, true, false) => RichText::new("needs Direct3D 12 1.620.2").color(WARN),
+                (_, true, true) => RichText::new("ready").color(GOOD),
+            });
+        });
+        self.graphics_choice(ui);
+        let plan = optimal::plan(optimal::Graphics::parse(&self.s.vn_graphics), &self.hardware);
+        ui.label(RichText::new(format!("For {} ({:.0} GB): {}, over its own settings for a 6-core processor.", self.hardware.gpu_name, self.hardware.vram_gb, plan.graphics.label())).small());
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            if ui.add_enabled(exe && d3d12, egui::Button::new(RichText::new("Launch Game").strong())).clicked() {
+                let _ = self.s.save();
+                self.launch();
+            }
+            let running = self.game.as_ref().is_some_and(Job::running);
+            if ui.add_enabled(running, egui::Button::new(RichText::new("Stop").color(BAD))).clicked()
+                && let Some(g) = &self.game
+            {
+                g.stop();
+            }
+            let can = !self.busy() && dir.is_some();
+            if ui.add_enabled(can, egui::Button::new("Build VIctory-Hydra")).on_hover_text("cargo build --release --locked -p victory in the checkout").clicked()
+                && let Some(d) = &dir
+            {
+                self.start_task_in("Build VIctory-Hydra", d, "cargo", &["build", "--release", "--locked", "-p", "victory"], &[]);
+            }
+            if ui
+                .add_enabled(can && exe, egui::Button::new("Get Direct3D 12"))
+                .on_hover_text("Microsoft's Direct3D 12 Agility SDK 1.620.2 (Microsoft.Direct3D.D3D12 from nuget.org): its D3D12Core.dll into the build's D3D12 folder, which VIctory-Hydra needs")
+                .clicked()
+                && let Some(b) = &built
+            {
+                let to = b.join("D3D12").display().to_string();
+                let script = format!(
+                    "$ErrorActionPreference='Stop'; $z=Join-Path $env:TEMP 'd3d12-1.620.2.zip'; $x=Join-Path $env:TEMP 'd3d12-1.620.2'; \
+                     Invoke-WebRequest 'https://api.nuget.org/v3-flatcontainer/microsoft.direct3d.d3d12/1.620.2/microsoft.direct3d.d3d12.1.620.2.nupkg' -OutFile $z -UseBasicParsing; \
+                     Expand-Archive $z $x -Force; New-Item -ItemType Directory -Force '{to}' | Out-Null; \
+                     $dll=Join-Path $x 'build\\native\\bin\\x64\\D3D12Core.dll'; $sig=Get-AuthenticodeSignature $dll; \
+                     if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'Microsoft') {{ throw 'D3D12Core.dll is not signed by Microsoft' }}; \
+                     Copy-Item $dll '{to}' -Force; Write-Host 'D3D12Core.dll 1.620.2 (signed by Microsoft) is in {to}'"
+                );
+                self.start_task_in("Get Direct3D 12", b, "powershell", &["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script], &[]);
+            }
+        });
+        if let Some(t) = &self.task {
+            task_status(ui, t);
+        }
+        if let Some(g) = &self.game {
+            let (c, s) = state_text(&Some(g.state()));
+            ui.label(RichText::new(format!("Title: {s}")).color(c));
         }
     }
 
@@ -573,18 +703,7 @@ impl App {
                 None => RichText::new("not found").color(BAD),
             });
         });
-        ui.add_space(4.0);
-        ui.strong("Graphics");
-        let before = self.s.vn_graphics.clone();
-        for g in optimal::Graphics::ALL {
-            ui.horizontal(|ui| {
-                ui.radio_value(&mut self.s.vn_graphics, g.name().to_owned(), RichText::new(g.label()).strong());
-                ui.label(RichText::new(g.note()).small());
-            });
-        }
-        if self.s.vn_graphics != before {
-            let _ = self.s.save();
-        }
+        self.graphics_choice(ui);
         let plan = optimal::plan(optimal::Graphics::parse(&self.s.vn_graphics), &self.hardware);
         ui.label(
             RichText::new(format!(
@@ -890,7 +1009,16 @@ impl App {
             {
                 let mut text = String::from(if full { "Mandy diagnostic log (full)\n" } else { "Mandy diagnostic log (compact)\n" });
                 text += &format!("branch {} at {}\n", self.git_branch, self.git_head);
-                if self.s.uses_vn() {
+                if self.s.uses_hydra() {
+                    text += &format!(
+                        "layer VIctory-Hydra ({}) through Play-VIctory.cmd: {} for {} ({:.0} GB, {} threads)\n",
+                        self.s.hydra_checkout().map(|d| d.display().to_string()).unwrap_or_default(),
+                        optimal::plan(optimal::Graphics::parse(&self.s.vn_graphics), &self.hardware).graphics.label(),
+                        self.hardware.gpu_name,
+                        self.hardware.vram_gb,
+                        self.hardware.threads
+                    );
+                } else if self.s.uses_vn() {
                     let plan = optimal::plan(optimal::Graphics::parse(&self.s.vn_graphics), &self.hardware);
                     text += &format!(
                         "layer VIctory-NVIDIA ({}) through its launcher: {} for {} ({:.0} GB, {} threads): {}; settings file {} (its switches are in its own log)\n",

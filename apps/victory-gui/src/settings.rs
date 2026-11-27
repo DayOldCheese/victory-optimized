@@ -32,6 +32,10 @@ pub struct Settings {
     /// The graphics preset for it (`crate::optimal::Graphics`); the rest of
     /// the launch is picked from the hardware.
     pub vn_graphics: String,
+    /// A checkout of ToLIManl/VIctory-Hydra (cool_fox's line with the
+    /// community's processor work); empty: `mandy-hydra` beside the
+    /// repository. It takes the same graphics preset.
+    pub hydra_dir: String,
 }
 
 /// Helper threads for a 6-core processor in VIctory-NVIDIA. Its defaults
@@ -80,7 +84,7 @@ impl Settings {
         if victory_core::profiles::Profile::parse(&s.profile).is_none() {
             s.profile = "play".into();
         }
-        if !matches!(s.layer.as_str(), "mandy" | "vnvidia") {
+        if !matches!(s.layer.as_str(), "mandy" | "vnvidia" | "hydra") {
             s.layer = "mandy".into();
         }
         s.vn_graphics = crate::optimal::Graphics::parse(&s.vn_graphics).name().to_owned();
@@ -117,6 +121,17 @@ impl Settings {
     pub fn vn_checkout(&self) -> Option<PathBuf> {
         let dir = if self.vn_dir.trim().is_empty() { self.repo.parent()?.join("mandy-vn") } else { PathBuf::from(self.vn_dir.trim()) };
         dir.join("scripts").join("play-nvidia.ps1").is_file().then_some(dir)
+    }
+
+    /// The VIctory-Hydra checkout, if there is one (with its launcher).
+    pub fn hydra_checkout(&self) -> Option<PathBuf> {
+        let dir = if self.hydra_dir.trim().is_empty() { self.repo.parent()?.join("mandy-hydra") } else { PathBuf::from(self.hydra_dir.trim()) };
+        dir.join("Play-VIctory.cmd").is_file().then_some(dir)
+    }
+
+    /// Whether Launch runs VIctory-Hydra.
+    pub fn uses_hydra(&self) -> bool {
+        self.layer == "hydra"
     }
 
     /// Whether Launch runs VIctory-NVIDIA.
