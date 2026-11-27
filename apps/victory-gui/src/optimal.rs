@@ -6,10 +6,12 @@
 //!   12 GB the Series X profile at 1440p left 13,000 textures waiting with
 //!   "the card has no room for more" (run 2026-11-27 21:09), the Series S
 //!   profile ran 5-9 fps with textures loading (21:24).
-//! - Frame generation is made ready only where DLSS frame generation runs
-//!   (RTX 40 and later): made ready, it holds back 14% of the card's memory
-//!   from textures (the launcher's VICTORY_TEXTURE_ROOM_PERCENT=86), and
-//!   AMD's FSR 3 in its place smears below about 15 rendered fps.
+//! - Frame generation on, 2 frames shown for each one rendered (`-FrameGen`):
+//!   DLSS frame generation on RTX 40 and later, AMD's FSR 3 on other cards
+//!   (the launcher's `-FgType auto`). Mandy renders 15-20 fps on an RTX 3060
+//!   with a Ryzen 5 5600X (run 2026-11-27 23:16), about what FSR 3 needs to
+//!   look right; on, it holds a fifth of the card's memory back from textures
+//!   (the launcher's VICTORY_TEXTURE_ROOM_PERCENT=80).
 //! - Fewer helper threads on processors of 12 threads or fewer (see
 //!   [`crate::settings::SIX_CORES`]).
 //! - Shaders translated before the game (`-PreloadShaders`). Not the full
@@ -139,9 +141,7 @@ pub fn plan(asked: Graphics, hw: &Hardware) -> Plan {
     }
     args.extend(["-Dlss".into(), dlss.into()]);
     args.push("-PreloadShaders".into());
-    if !hw.frame_generation() {
-        args.push("-NoFrameGenReady".into());
-    }
+    args.push("-FrameGen".into());
     let mut set = Vec::new();
     let mut unset = Vec::new();
     if hw.threads > 0 && hw.threads <= 12 {
@@ -190,7 +190,8 @@ mod tests {
         assert!(p.args.contains(&"-SeriesS".to_owned()));
         assert!(p.args.contains(&"-PreloadShaders".to_owned()));
         assert!(!p.args.contains(&"-Preload".to_owned()));
-        assert!(p.args.contains(&"-NoFrameGenReady".to_owned()));
+        assert!(p.args.contains(&"-FrameGen".to_owned()));
+        assert!(!p.args.contains(&"-NoFrameGenReady".to_owned()));
         assert!(p.set.iter().any(|(k, v)| k == "VICTORY_THIN_THREADS" && v == "4"));
         assert!(p.unset.contains(&RAY_TRACING.to_owned()));
     }
@@ -200,7 +201,7 @@ mod tests {
         let p = plan(Graphics::Auto, &pc("NVIDIA GeForce RTX 5070", 11.9, 16));
         assert_eq!(p.graphics, Graphics::Quality);
         assert!(!p.args.contains(&"-SeriesS".to_owned()));
-        assert!(!p.args.contains(&"-NoFrameGenReady".to_owned()));
+        assert!(p.args.contains(&"-FrameGen".to_owned()));
         assert!(p.unset.iter().any(|k| k == "VICTORY_THIN_THREADS"));
         let big = plan(Graphics::Auto, &pc("NVIDIA GeForce RTX 3090", 24.0, 24));
         assert_eq!(big.graphics, Graphics::Quality);

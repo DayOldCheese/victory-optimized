@@ -271,7 +271,7 @@ impl App {
                 hw.vram_gb,
                 hw.threads,
                 plan.graphics.label(),
-                if hw.frame_generation() { ", frame generation ready (F1 in game)" } else { ", all of the card's memory for textures" },
+                if hw.frame_generation() { ", DLSS frame generation 2x" } else { ", FSR 3 frame generation 2x" },
                 if plan.set.iter().any(|(k, _)| k == "VICTORY_THIN_THREADS") { ", helper threads for this processor" } else { "" },
             ))
             .small()
