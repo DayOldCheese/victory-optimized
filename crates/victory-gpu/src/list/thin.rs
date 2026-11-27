@@ -371,6 +371,7 @@ pub(crate) fn line(frames: f64) {
     );
     #[cfg(feature = "diagnostics")]
     per_op_line(frames, s[1]);
+    crate::spans::line(frames);
 }
 
 /// Where the translating threads' time went, per frame: the share they ran

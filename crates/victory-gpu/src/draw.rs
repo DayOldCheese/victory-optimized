@@ -1463,6 +1463,7 @@ impl State {
         if !self.bind(list, p, false) {
             return false;
         }
+        let _inputs = crate::spans::span(crate::spans::Id::InputBuffers);
         let l = &list.list;
         // Vertex buffers the input layout reads.
         let mut views = [D3D12_VERTEX_BUFFER_VIEW::default(); 32];
@@ -1544,7 +1545,11 @@ impl State {
     pub(crate) fn bind(&mut self, list: &HostList, p: &HostPipeline, compute: bool) -> bool {
         let l = &list.list;
         // Textures picked by index, before anything asks for them.
-        self.early_textures(list, p, compute);
+        {
+            let _t = crate::spans::span(crate::spans::Id::EarlyTextures);
+            self.early_textures(list, p, compute);
+        }
+        let heaps_span = crate::spans::span(crate::spans::Id::Heaps);
         if crate::host::walls_trace() {
             self.walls_census(p, compute);
         }
@@ -1631,6 +1636,8 @@ impl State {
             // The title may release the pipeline before it submits the list.
             list.bind_pipeline(&p.name, &p.pso, &p.root);
         }
+        drop(heaps_span);
+        let stages_span = crate::spans::span(crate::spans::Id::Stages);
         for stage in &p.stages {
             let t = stage.translated();
             STORES.set(t.stores);
@@ -1824,6 +1831,8 @@ impl State {
                 }
             }
         }
+        drop(stages_span);
+        let _after = crate::spans::span(crate::spans::Id::AfterStages);
         // Depth textures it writes through unordered access: their colour
         // twins hold what they lack from here on.
         list.twins_written();
@@ -3284,9 +3293,13 @@ impl State {
         self.trace("mesh", x, 0);
         let ran = mesh_test() != 1
             && mesh_kept(self.pipeline)
-            && self.prepare_for(list, false, true)
+            && {
+                let _p = crate::spans::span(crate::spans::Id::MeshPrepare);
+                self.prepare_for(list, false, true)
+            }
             && match list.list.cast::<ID3D12GraphicsCommandList6>() {
                 Ok(l6) => {
+                    let _r = crate::spans::span(crate::spans::Id::MeshRecord);
                     #[cfg(feature = "diagnostics")]
                     list.note_op(|| self.op_text(format!("mesh {x}"), false));
                     self.mesh_scissor(list, true);
@@ -4064,6 +4077,7 @@ impl State {
             why("mesh draws are switched off (VICTORY_MESH_TEST=skip)");
             return false;
         }
+        let arguments_span = crate::spans::span(crate::spans::Id::IndirectArguments);
         // One record without a count: clamped in a batch (`batches`).
         let batch = if batches() > 0 && max == 1 && count.is_none() {
             args.refresh(list, arguments, len);
@@ -4155,12 +4169,15 @@ impl State {
                 (bounded, 0)
             }
         };
+        drop(arguments_span);
+        let prepare_span = crate::spans::span(crate::spans::Id::IndirectPrepare);
         let ran = match kind {
             DRAW | INDEXED => self.prepare(list, kind == INDEXED),
             MESH => self.prepare_for(list, false, true),
             DISPATCH => self.bind(list, p, true),
             _ => false,
         };
+        drop(prepare_span);
         if !ran {
             why("prepare failed");
             return false;
@@ -4171,6 +4188,7 @@ impl State {
         });
         #[cfg(feature = "diagnostics")]
         list.ran_indirect(p.pso.as_raw() as usize, &p.name, kind, max, &self.user);
+        let record_span = crate::spans::span(crate::spans::Id::IndirectRecord);
         if kind == MESH {
             self.mesh_scissor(list, true);
         }
@@ -4189,6 +4207,8 @@ impl State {
         if kind == MESH {
             self.mesh_scissor(list, false);
         }
+        drop(record_span);
+        let _after = crate::spans::span(crate::spans::Id::IndirectAfter);
         if kind == DISPATCH {
             self.buffers_written();
         } else {

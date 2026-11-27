@@ -17,6 +17,7 @@
 
 #[cfg(windows)]
 mod ambient;
+mod spans;
 #[cfg(windows)]
 mod lightprobe;
 #[cfg(windows)]
