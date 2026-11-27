@@ -241,6 +241,9 @@ impl App {
         if self.s.vn_series_s {
             args.push("-SeriesS".into());
         }
+        if self.s.vn_preload {
+            args.push("-Preload".into());
+        }
         self.game = Some(Job::start("Title", &dir, "powershell", &args, &[]));
         self.say(ACCENT, format!("VIctory-NVIDIA started ({}, DLSS {})", if self.s.vn_series_s { "Series S" } else { "Series X 1440p" }, self.s.vn_dlss));
         self.tab = Tab::Diagnostics;
@@ -579,6 +582,13 @@ impl App {
             if self.s.vn_dlss != before {
                 let _ = self.s.save();
             }
+            if ui
+                .checkbox(&mut self.s.vn_preload, "Preload shaders first")
+                .on_hover_text("-Preload: every shader and the pipelines earlier runs used are made before the game starts (minutes), so the driver compiles nothing while you play")
+                .changed()
+            {
+                let _ = self.s.save();
+            }
         });
         ui.label(RichText::new("The first launch of a new build compiles pipelines and restarts itself once: judge the second launch.").small());
         ui.add_space(8.0);
@@ -871,14 +881,23 @@ impl App {
                 && let Some(path) = dialog::save("Save the diagnostic log", &[("Text", "*.txt")], if full { "victory-diagnostics-full.txt" } else { "victory-diagnostics.txt" })
             {
                 let mut text = String::from(if full { "Mandy diagnostic log (full)\n" } else { "Mandy diagnostic log (compact)\n" });
-                text += &format!(
-                    "branch {} at {}\nprofile {} (console {}); switches: {}\n",
-                    self.git_branch,
-                    self.git_head,
-                    self.s.profile,
-                    Profile::parse(&self.s.profile).and_then(Profile::console).unwrap_or("series-x"),
-                    self.s.launch_env().iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(" ")
-                );
+                text += &format!("branch {} at {}\n", self.git_branch, self.git_head);
+                if self.s.uses_vn() {
+                    text += &format!(
+                        "layer VIctory-NVIDIA ({}) through its launcher: {}, DLSS {}, preload {} (its switches are in its own log)\n",
+                        self.s.vn_checkout().map(|d| d.display().to_string()).unwrap_or_default(),
+                        if self.s.vn_series_s { "Series S" } else { "Series X" },
+                        self.s.vn_dlss,
+                        self.s.vn_preload
+                    );
+                } else {
+                    text += &format!(
+                        "profile {} (console {}); switches: {}\n",
+                        self.s.profile,
+                        Profile::parse(&self.s.profile).and_then(Profile::console).unwrap_or("series-x"),
+                        self.s.launch_env().iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(" ")
+                    );
+                }
                 for (n, l) in &source {
                     let body = if full { l.iter().map(|x| export::plain(x)).collect::<Vec<_>>().join("\n") } else { export::compact(l) };
                     text += &format!("\n==== {n} ====\n{body}\n");

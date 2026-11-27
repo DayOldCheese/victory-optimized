@@ -33,6 +33,9 @@ pub struct Settings {
     pub vn_series_s: bool,
     /// Its DLSS mode (`-Dlss`): off, dlaa, quality, balanced, performance.
     pub vn_dlss: String,
+    /// Its `-Preload`: every shader and the pipelines earlier runs used made
+    /// before the game starts, so none is compiled while playing.
+    pub vn_preload: bool,
 }
 
 fn file() -> Option<PathBuf> {
