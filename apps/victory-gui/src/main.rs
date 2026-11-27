@@ -244,6 +244,9 @@ impl App {
         if self.s.vn_preload {
             args.push("-Preload".into());
         }
+        if self.s.vn_no_framegen {
+            args.push("-NoFrameGenReady".into());
+        }
         self.game = Some(Job::start("Title", &dir, "powershell", &args, &[]));
         self.say(ACCENT, format!("VIctory-NVIDIA started ({}, DLSS {})", if self.s.vn_series_s { "Series S" } else { "Series X 1440p" }, self.s.vn_dlss));
         self.tab = Tab::Diagnostics;
@@ -585,6 +588,13 @@ impl App {
             if ui
                 .checkbox(&mut self.s.vn_preload, "Preload shaders first")
                 .on_hover_text("-Preload: every shader and the pipelines earlier runs used are made before the game starts (minutes), so the driver compiles nothing while you play")
+                .changed()
+            {
+                let _ = self.s.save();
+            }
+            if ui
+                .checkbox(&mut self.s.vn_no_framegen, "No frame generation (more room for textures)")
+                .on_hover_text("-NoFrameGenReady: frame generation is not made ready, so textures may use the card's memory budget less 768 MB (about 93% on a 12 GB card) instead of 86% of it (F1's frame generation is then unavailable)")
                 .changed()
             {
                 let _ = self.s.save();

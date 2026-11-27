@@ -36,6 +36,9 @@ pub struct Settings {
     /// Its `-Preload`: every shader and the pipelines earlier runs used made
     /// before the game starts, so none is compiled while playing.
     pub vn_preload: bool,
+    /// Its `-NoFrameGenReady`: frame generation not made ready, so the card's
+    /// texture room is not cut to 86% of its budget for it.
+    pub vn_no_framegen: bool,
 }
 
 fn file() -> Option<PathBuf> {
