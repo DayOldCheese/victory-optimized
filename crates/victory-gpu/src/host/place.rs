@@ -256,7 +256,13 @@ impl HostList {
             shadow: to,
             from: scratch.map(|s| s.2 as usize),
         }));
-        deferred.title_written();
+        // A source the processor writes may stand in for the destination in
+        // later fills of the list; one shaders write may not have landed yet.
+        if own.is_none() {
+            deferred.placed_written(dst, len, src);
+        } else {
+            deferred.title_written();
+        }
         self.changed_something();
         true
     }

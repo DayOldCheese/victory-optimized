@@ -1053,6 +1053,43 @@ pub(crate) fn warp_adapter() -> windows::core::Result<IDXGIAdapter> {
 
 #[cfg(test)]
 mod tests {
+    /// A fill a placed copy covers whole reads the copy's source; one it
+    /// covers in part does not; copies chain; overwriting a source, a copy
+    /// over itself, a shader write or any write of title memory ends the
+    /// forwards it touches. (ToLIManl/VIctory-Hydra's test, GPL-3.0-or-later.)
+    #[test]
+    fn placed_copy_forwards_covered_fills_soundly() {
+        let mut d = super::Deferred::default();
+        d.placed_written(0x1000, 0x190, 0x5000);
+        assert_eq!(d.forwarded(0x1000, 0x190), Some(0x5000));
+        assert_eq!(d.forwarded(0x1040, 0x80), Some(0x5040));
+        assert_eq!(d.forwarded(0x0FF0, 0x20), None);
+        assert_eq!(d.forwarded(0x1100, 0x100), None);
+        d.placed_written(0x2000, 0x100, 0x6000);
+        assert_eq!(d.forwarded(0x1000, 0x190), Some(0x5000));
+        assert_eq!(d.forwarded(0x2020, 0x40), Some(0x6020));
+        // A copy of a forwarded destination goes to the first source.
+        d.placed_written(0x3000, 0x80, 0x2020);
+        assert_eq!(d.forwarded(0x3010, 0x20), Some(0x6030));
+        // Overwriting a forward's source ends it.
+        d.placed_written(0x5080, 0x40, 0x7000);
+        assert_eq!(d.forwarded(0x1000, 0x190), None);
+        assert_eq!(d.forwarded(0x5080, 0x40), Some(0x7000));
+        // A copy over itself is not one.
+        d.placed_written(0x7010, 0x40, 0x7000);
+        assert_eq!(d.forwarded(0x7010, 0x40), None);
+        // Shader writes end the forwards whose destination or source they touch.
+        d.unforward(0x2010, 0x20);
+        assert_eq!(d.forwarded(0x2020, 0x40), None);
+        assert_eq!(d.forwarded(0x3010, 0x20), Some(0x6030));
+        d.unforward(0x6020, 0x20);
+        assert_eq!(d.forwarded(0x3010, 0x20), None);
+        // Any write of title memory ends them all.
+        d.placed_written(0x8000, 0x100, 0x9000);
+        d.title_written();
+        assert_eq!(d.forwarded(0x8000, 0x100), None);
+    }
+
     /// A list of ours is found by its name, with the debug layer's note or not.
     #[cfg(feature = "diagnostics")]
     #[test]
@@ -2375,6 +2412,10 @@ enum Step {
 /// the upload buffers its GPU commands read, kept until the list is reset.
 #[derive(Default)]
 struct Deferred {
+    /// Placed copies of this list whose destination a later fill may read
+    /// from their source instead: (destination, bytes, source)
+    /// (`VICTORY_PLACED_FORWARD`).
+    forward: Vec<(usize, usize, usize)>,
     /// Destination, source, bytes.
     copies: Vec<Step>,
     uploads: Vec<ID3D12Resource>,
@@ -2442,8 +2483,85 @@ impl Deferred {
         self.refreshed.clear();
         self.gpu_written.clear();
         self.filled.clear();
+        self.forward.clear();
+    }
+
+    /// As [`Deferred::title_written`], for a placed copy of `[src, src + len)`
+    /// into `[dst, dst + len)` whose source is title memory the processor
+    /// writes: forwards that it overwrites go, and it becomes one, so that a
+    /// later fill of its destination reads its source and need not wait for
+    /// the copy to land (a `Waits::ForReaders` wait at the submission).
+    fn placed_written(&mut self, dst: usize, len: usize, src: usize) {
+        self.refreshed.clear();
+        self.gpu_written.clear();
+        self.filled.clear();
+        let (Some(dst_end), Some(src_end)) = (dst.checked_add(len), src.checked_add(len)) else {
+            self.forward.clear();
+            return;
+        };
+        let overlaps = |a: usize, a_end: usize, b: usize, b_end: usize| a < b_end && b < a_end;
+        // A copy of a forwarded destination forwards to the first source,
+        // found before the forwards it overwrites go.
+        let source = (len > 0 && !overlaps(src, src_end, dst, dst_end)).then(|| self.forwarded(src, len).unwrap_or(src));
+        self.forward.retain(|&(d, l, s)| !overlaps(d, d.saturating_add(l), dst, dst_end) && !overlaps(s, s.saturating_add(l), dst, dst_end));
+        if let Some(s) = source
+            && let Some(s_end) = s.checked_add(len)
+            && !overlaps(s, s_end, dst, dst_end)
+        {
+            const MOST: usize = 32;
+            if self.forward.len() >= MOST {
+                self.forward.remove(0);
+            }
+            self.forward.push((dst, len, s));
+        }
+    }
+
+    /// Shaders of the list write `[address, address + len)`: forwards whose
+    /// destination or source it touches go.
+    fn unforward(&mut self, address: usize, len: usize) {
+        if self.forward.is_empty() || len == 0 {
+            return;
+        }
+        let Some(end) = address.checked_add(len) else {
+            self.forward.clear();
+            return;
+        };
+        let overlaps = |a: usize, a_end: usize, b: usize, b_end: usize| a < b_end && b < a_end;
+        self.forward.retain(|&(d, l, s)| !overlaps(d, d.saturating_add(l), address, end) && !overlaps(s, s.saturating_add(l), address, end));
+    }
+
+    /// Where a fill of `[src, src + len)` may read instead: the source of a
+    /// placed copy whose destination holds all of it.
+    fn forwarded(&self, src: usize, len: usize) -> Option<usize> {
+        let end = src.checked_add(len)?;
+        self.forward.iter().rev().find_map(|&(d, l, s)| (src >= d && end <= d.checked_add(l)?).then(|| s + (src - d)))
+    }
+
+    /// [`Deferred::forwarded`] when it is on, counted, else `src`.
+    fn fill_source(&self, src: usize, len: usize) -> usize {
+        match placed_forward_on().then(|| self.forwarded(src, len)).flatten() {
+            Some(from) => {
+                PLACED_FORWARDED.fetch_add(1, Ordering::Relaxed);
+                from
+            }
+            None => src,
+        }
     }
 }
+
+/// Whether a fill that a placed copy earlier in its list covers reads the
+/// copy's source (`VICTORY_PLACED_FORWARD`, on; `0`: it waits for the copy).
+///
+/// After ToLIManl/VIctory-Hydra (GPL-3.0-or-later), measured there at 21.3-23.0
+/// to 0.0-1.8 ms a frame of such waits (`BEHIND_PLACED`) on an RTX 3060 with a
+/// Ryzen 5 5600X.
+fn placed_forward_on() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_PLACED_FORWARD").is_none_or(|v| v != "0"))
+}
+
+/// Fills that read a placed copy's source, since the last frame line.
+static PLACED_FORWARDED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl Drop for Deferred {
     fn drop(&mut self) {
@@ -3827,11 +3945,13 @@ fn late_line(frames: f64) {
     if place::on() {
         let t: Vec<f64> = place::STATS.iter().map(|r| r.swap(0, Ordering::Relaxed) as f64 / frames).collect();
         tracing::info!(
-            "title buffer copies at their place in the lists, per frame (VICTORY_COPIES_IN_PLACE): {:.1} of {:.1} KB, {:.1} of them out              of what shaders wrote; {:.2} copies into textures out of what shaders wrote",
+            "title buffer copies at their place in the lists, per frame (VICTORY_COPIES_IN_PLACE): {:.1} of {:.1} KB, {:.1} of them out              of what shaders wrote; {:.2} copies into textures out of what shaders wrote; {:.1} fills read a placed copy's source (VICTORY_PLACED_FORWARD={})",
             t[0],
             t[1] / 1024.0,
             t[2],
             t[3],
+            PLACED_FORWARDED.swap(0, Ordering::Relaxed) as f64 / frames,
+            u8::from(placed_forward_on()),
         );
     }
     card_steps::log(frames);
@@ -7224,9 +7344,9 @@ impl HostList {
     /// Copies `len` bytes of title memory at `src` into the list's upload
     /// memory at `dst` when the list is submitted.
     pub(crate) fn defer_fill(&self, dst: *mut u8, src: *const u8, len: usize) {
-        self.deferred()
-            .copies
-            .push(Step::Fill(dst as usize, src as usize, len, None));
+        let mut deferred = self.deferred();
+        let src = deferred.fill_source(src as usize, len);
+        deferred.copies.push(Step::Fill(dst as usize, src, len, None));
     }
 
     /// The host address of `len` bytes of scratch memory that hold the title
@@ -7247,16 +7367,18 @@ impl HostList {
     /// As [`HostList::defer_fill`], for upload memory that only `slot` (a
     /// title heap's address, and the slot) shows.
     pub(crate) fn defer_constants(&self, dst: *mut u8, src: *const u8, len: usize, slot: (usize, u32)) {
-        self.deferred()
-            .copies
-            .push(Step::Fill(dst as usize, src as usize, len, Some(card_steps::FillTo::Slot(slot.0, slot.1))));
+        let mut deferred = self.deferred();
+        let src = deferred.fill_source(src as usize, len);
+        deferred.copies.push(Step::Fill(dst as usize, src, len, Some(card_steps::FillTo::Slot(slot.0, slot.1))));
     }
 
     /// As [`HostList::defer_fill`], for the beginning of a buffer
     /// [`HostList::upload`] made.
     pub(crate) fn defer_fill_buffer(&self, buffer: &ID3D12Resource, dst: *mut u8, src: *const u8, len: usize) {
         let to = (card_steps::stage() > 1).then(|| card_steps::FillTo::Buffer(buffer.clone()));
-        self.deferred().copies.push(Step::Fill(dst as usize, src as usize, len, to));
+        let mut deferred = self.deferred();
+        let src = deferred.fill_source(src as usize, len);
+        deferred.copies.push(Step::Fill(dst as usize, src, len, to));
     }
 
     /// Brings `[address, address + len)` of a buffer's host copy up to date
@@ -7289,6 +7411,7 @@ impl HostList {
         len: usize,
     ) {
         let mut deferred = self.deferred();
+        deferred.unforward(address, len);
         let key = (std::sync::Arc::as_ptr(shadow) as usize, address, len);
         if deferred.gpu_written.insert(key) || !declare_once() {
             deferred.copies.push(Step::GpuWrite(shadow.clone(), address, len));
