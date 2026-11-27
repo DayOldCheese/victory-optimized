@@ -62,6 +62,17 @@ pub const SAFE: &[Switch] = &[
     s("VICTORY_LAND_ECHO", "0", "No echo of landings."),
 ];
 
+/// What "fast" adds to "play", with the Series S console profile: more of
+/// the title's buffers kept in the card's own memory, where shaders read them
+/// without crossing the bus and the card compares them itself. Measured by
+/// Maykzera/victory-rtx3060 on an RTX 5070 in Series S at half scale: 11.0 to
+/// 21.8 fps from these two alone; 14-17 fps on an RTX 3060 with a Ryzen 5
+/// 5600X with their whole set. Not yet measured here.
+pub const FAST: &[Switch] = &[
+    x("VICTORY_CARD_BUFFERS_MIN_MB", "1", "Title buffers from 1 MB up are copied to the card's memory (16 MB up by default on cards up to 12 GB)."),
+    x("VICTORY_CARD_BUFFERS_MB", "1536", "Up to 1.5 GB of them (512 MB by default on cards up to 12 GB)."),
+];
+
 /// What "ray tracing" adds to "play" (`play.ps1 -RayTracing`).
 pub const RAY_TRACING: &[Switch] = &[x(
     "VICTORY_BVH_BUILDER",
@@ -80,10 +91,12 @@ pub enum Profile {
     Play,
     /// `play.ps1 -RayTracing`: the title's ray-traced light on.
     RayTracing,
+    /// Play in the Series S profile, with more buffers on the card ([`FAST`]).
+    Fast,
 }
 
 impl Profile {
-    pub const ALL: [Profile; 4] = [Profile::Play, Profile::RayTracing, Profile::Safe, Profile::Stable];
+    pub const ALL: [Profile; 5] = [Profile::Play, Profile::Fast, Profile::RayTracing, Profile::Safe, Profile::Stable];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -91,6 +104,16 @@ impl Profile {
             Profile::Safe => "safe",
             Profile::Play => "play",
             Profile::RayTracing => "raytracing",
+            Profile::Fast => "fast",
+        }
+    }
+
+    /// The console model the title is told it runs on (`victory run
+    /// --console`); `None`: the default, Series X.
+    pub fn console(self) -> Option<&'static str> {
+        match self {
+            Profile::Fast => Some("series-s"),
+            _ => None,
         }
     }
 
@@ -105,6 +128,7 @@ impl Profile {
             Profile::Safe => &[BASE, SAFE],
             Profile::Play => &[BASE, PLAY],
             Profile::RayTracing => &[BASE, PLAY, RAY_TRACING],
+            Profile::Fast => &[BASE, PLAY, FAST],
         };
         parts.iter().flat_map(|p| p.iter().copied()).collect()
     }
@@ -124,7 +148,7 @@ impl Profile {
 
 /// Every switch any profile sets, each once.
 pub fn all_switches() -> impl Iterator<Item = &'static Switch> {
-    BASE.iter().chain(PLAY).chain(SAFE).chain(RAY_TRACING)
+    BASE.iter().chain(PLAY).chain(SAFE).chain(FAST).chain(RAY_TRACING)
 }
 
 #[cfg(test)]
@@ -158,6 +182,10 @@ mod tests {
         assert_eq!(&rt[..play.len()], &play[..]);
         assert_eq!(rt.last().unwrap().var, "VICTORY_BVH_BUILDER");
         assert!(Profile::Safe.switches().iter().all(|s| !PLAY.contains(s)));
+        let fast = Profile::Fast.switches();
+        assert_eq!(&fast[..play.len()], &play[..]);
+        assert_eq!(Profile::Fast.console(), Some("series-s"));
+        assert_eq!(Profile::Play.console(), None);
     }
 
     #[test]

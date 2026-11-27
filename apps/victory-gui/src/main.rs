@@ -1,4 +1,4 @@
-//! VIctory Optimized: a desktop front end for building, testing,
+//! Mandy: a desktop front end for building, testing,
 //! benchmarking and running the layer, with live diagnostics and Git.
 //!
 //! It drives the existing tools (`cargo`, `git`, `target\release\victory.exe`)
@@ -211,6 +211,9 @@ impl App {
         }
         self.frames = frames::Follower::default();
         let mut args = vec!["run".to_owned(), self.s.game_exe.clone(), "--execute".into()];
+        if let Some(console) = Profile::parse(&self.s.profile).unwrap_or(Profile::Play).console() {
+            args.extend(["--console".into(), console.to_owned()]);
+        }
         let extra: Vec<String> = self.s.game_args.split_whitespace().map(str::to_owned).collect();
         if !extra.is_empty() {
             args.push("--".into());
@@ -332,7 +335,7 @@ impl eframe::App for App {
 
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.heading(RichText::new("VIctory Optimized").color(ACCENT).strong());
+                ui.heading(RichText::new("Mandy").color(ACCENT).strong());
                 ui.label(format!("v{}", env!("CARGO_PKG_VERSION")));
                 ui.separator();
                 ui.label(format!("branch {}", self.git_branch));
@@ -476,6 +479,7 @@ impl App {
         for p in Profile::ALL {
             let (label, note) = match p {
                 Profile::Play => ("Play", "scripts/play.ps1's settings: the set Belobug's measured runs were made with."),
+                Profile::Fast => ("Fast (Series S)", "Play in the Series S profile (1080p, less video memory) with 1.5 GB of the title's buffers on the card. Softer than Series X. Not yet measured here."),
                 Profile::RayTracing => ("Ray-traced light", "Play plus the title's own ray-traced indirect light: lit interiors, about a third slower (README)."),
                 Profile::Safe => ("Safe", "play.ps1 -Safe: without the newer, faster ways. The first thing to try when something is wrong."),
                 Profile::Stable => ("Layer defaults", "Every switch off. Much slower; for finding which switch causes a fault."),
@@ -708,12 +712,13 @@ impl App {
             if (compact || full)
                 && let Some(path) = dialog::save("Save the diagnostic log", &[("Text", "*.txt")], if full { "victory-diagnostics-full.txt" } else { "victory-diagnostics.txt" })
             {
-                let mut text = String::from(if full { "VIctory Optimized diagnostic log (full)\n" } else { "VIctory Optimized diagnostic log (compact)\n" });
+                let mut text = String::from(if full { "Mandy diagnostic log (full)\n" } else { "Mandy diagnostic log (compact)\n" });
                 text += &format!(
-                    "branch {} at {}\nprofile {}; switches: {}\n",
+                    "branch {} at {}\nprofile {} (console {}); switches: {}\n",
                     self.git_branch,
                     self.git_head,
                     self.s.profile,
+                    Profile::parse(&self.s.profile).and_then(Profile::console).unwrap_or("series-x"),
                     self.s.launch_env().iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(" ")
                 );
                 for (n, l) in &source {
@@ -872,8 +877,8 @@ impl App {
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1280.0, 820.0]).with_min_inner_size([900.0, 600.0]).with_title("VIctory Optimized"),
+        viewport: egui::ViewportBuilder::default().with_inner_size([1280.0, 820.0]).with_min_inner_size([900.0, 600.0]).with_title("Mandy"),
         ..Default::default()
     };
-    eframe::run_native("VIctory Optimized", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
+    eframe::run_native("Mandy", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
 }
