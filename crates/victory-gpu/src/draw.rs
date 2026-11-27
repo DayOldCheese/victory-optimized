@@ -1452,6 +1452,8 @@ impl State {
         };
         if p.compute || p.mesh != mesh {
             once!(mesh, "a draw or mesh dispatch with another kind of pipeline");
+            #[cfg(feature = "diagnostics")]
+            crate::pipeline::note_why("a draw or mesh dispatch with another kind of pipeline".into());
             return false;
         }
         if p.rects && self.topology != RECTANGLES {
@@ -1492,6 +1494,8 @@ impl State {
         if indexed {
             let v = self.index;
             let Some(shadow) = crate::shadow::find_any(v.address, u64::from(v.size)) else {
+                #[cfg(feature = "diagnostics")]
+                crate::pipeline::note_why("an index buffer with no host copy".into());
                 return false;
             };
             shadow.refresh(list, v.address, u64::from(v.size));
@@ -1637,6 +1641,8 @@ impl State {
             STORES.set(true);
             if made.iter().any(|m| m.1 == u32::MAX) {
                 once!("a draw whose descriptor table found no free slots is dropped");
+                #[cfg(feature = "diagnostics")]
+                crate::pipeline::note_why("a descriptor table found no free slots".into());
                 return false;
             }
             if stage.shader.ambient.is_some() || stage.shader.probe.is_some() {
@@ -1658,6 +1664,8 @@ impl State {
                 };
                 let Some(ready) = self.memory_ready(list, t, compute, use_) else {
                     once!("a shader that reads title memory by address without a view heap to hold its views: the draw is dropped");
+                    #[cfg(feature = "diagnostics")]
+                    crate::pipeline::note_why("title memory read by address without a view heap".into());
                     return false;
                 };
                 Some(ready)
@@ -1743,6 +1751,8 @@ impl State {
                         once!(slot, "a shader reads a root view the title did not set");
                         // A table left unset is undefined: a null view.
                         if tabled && !self.root_srv_table(list, None, param, compute, false) {
+                            #[cfg(feature = "diagnostics")]
+                            crate::pipeline::note_why("a root view table not made (view unset)".into());
                             return false;
                         }
                         continue;
@@ -1755,6 +1765,8 @@ impl State {
                         });
                     if tabled {
                         if !self.root_srv_table(list, Some(address), param, compute, biased) {
+                            #[cfg(feature = "diagnostics")]
+                            crate::pipeline::note_why("a root view table not made".into());
                             return false;
                         }
                         continue;
@@ -1806,6 +1818,8 @@ impl State {
                     }
                 };
                 if !self.root_uav(list, address, param, compute, writes) {
+                    #[cfg(feature = "diagnostics")]
+                    crate::pipeline::note_why("a root unordered view not made".into());
                     return false;
                 }
             }
