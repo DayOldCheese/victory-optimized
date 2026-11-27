@@ -597,7 +597,9 @@ impl App {
             ui.add_space(12.0);
             ui.heading("Graphics and debugging");
             ui.label("Only what the layer reads. Debug options slow a run down and are for finding faults.");
-            let extra: [(&str, &str, &str, bool); 10] = [
+            let extra: [(&str, &str, &str, bool); 12] = [
+                ("VICTORY_WAVE_LDS_LOOSE", "1", "Last resort for console wave64 programs NVIDIA would refuse: run them approximately instead of not at all (a value shared inside a branch may be read stale).", true),
+                ("VICTORY_WAVE_WHY", "1", "Debugging: logs why a program keeps 64-lane waves (NVIDIA refuses those).", false),
                 ("VICTORY_PORT_CONSTANTS", "1", "Renderer patch 1: the title's constants heap read by the card where the title writes it (README). Off by default while tested.", true),
                 ("VICTORY_PORT_DESCRIPTORS", "1", "Renderer patch 2: descriptor-table stores report their slots instead of a scan a frame (README). Off by default while tested.", true),
                 ("VICTORY_PORT_CBV", "1", "Renderer patch 5: shaders read constant buffers in place (README: -4.7 ms). Off by default while tested.", true),

@@ -53,6 +53,11 @@ pub const PLAY: &[Switch] = &[
     // the pipelines to make. On the RTX 3060 the driver took 5.6 s for each slow
     // one and ~1,700 were still queued after 5 minutes of play (two runs,
     // 2026-11-26): made in the title they cost the world its frames.
+    // Exact (after deynesdev fab7fda, via insenzaboor d157b32): on NVIDIA's
+    // 32-lane waves the console's `ds_bpermute` within each 32-lane half, and
+    // group-shared memory kept under D3D12's 32 KiB, so fewer wave64 programs
+    // keep 64 lanes and are refused (three were in our RTX 3060 runs).
+    s("VICTORY_WAVE32_FIXES", "1", "Console wave64 programs: lane permutes within each 32-lane half, as the console runs them, and group-shared memory kept under 32 KiB (exact)."),
     s("VICTORY_PIPELINE_BOOK", "1", "The pipelines the title creates are written down (in the cache folder), for Warm Pipelines to make ahead of a run."),
 ];
 
