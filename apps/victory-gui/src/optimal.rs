@@ -157,60 +157,6 @@ pub fn plan(asked: Graphics, hw: &Hardware) -> Plan {
     Plan { graphics, args, set, unset }
 }
 
-/// Where VIctory-Hydra's launcher (`Play-VIctory.cmd`, which keeps any
-/// `VICTORY_` switch already set) finds what it does not carry itself.
-pub struct HydraPaths {
-    pub game_dir: String,
-    /// NVIDIA's Streamline and DLSS files, if any (its own `nvidia-sdk`, or
-    /// VIctory-NVIDIA's beside it).
-    pub streamline: Option<String>,
-    /// AMD's FidelityFX files, likewise.
-    pub fidelityfx: Option<String>,
-}
-
-/// VIctory-Hydra's launch for this PC: the preset it comes to and the
-/// switches over its launcher's defaults (which are already its measured
-/// set for an RTX 3060 with a Ryzen 5 5600X: 6-core helper threads and so
-/// on). Only what the preset and the hardware change is set here.
-pub fn hydra_env(asked: Graphics, hw: &Hardware, paths: &HydraPaths) -> (Graphics, Vec<(String, String)>) {
-    let p = plan(asked, hw);
-    let mut env: Vec<(String, String)> = vec![("VICTORY_GAME_DIR".into(), paths.game_dir.clone())];
-    let set = |env: &mut Vec<(String, String)>, k: &str, v: &str| env.push((k.to_owned(), v.to_owned()));
-    // The frame-rate line (`victory_gpu::host`) and the frame's account
-    // (`copystat`) are kept: its own default, warnings only, drops both.
-    set(&mut env, "VICTORY_LOG", "warn,victory_gpu::host=info,victory_gpu::copystat=info,victory_gpu::list::thin=info");
-    match p.graphics {
-        Graphics::Performance | Graphics::Auto => {
-            set(&mut env, "VICTORY_CONSOLE", "series-s");
-            set(&mut env, "VICTORY_OUTPUT", "1920x1080");
-        }
-        Graphics::Quality | Graphics::Ultra => {
-            set(&mut env, "VICTORY_CONSOLE", "series-x");
-            set(&mut env, "VICTORY_OUTPUT", "2560x1440");
-        }
-    }
-    let dlss = p.args.windows(2).find(|w| w[0] == "-Dlss").map_or("balanced", |w| w[1].as_str()).to_owned();
-    if let Some(sl) = &paths.streamline {
-        set(&mut env, "VICTORY_STREAMLINE_DIR", sl);
-        set(&mut env, "VICTORY_DLSS", "1");
-        set(&mut env, "VICTORY_DLSS_MODE", &dlss);
-    }
-    // FSR 3 frame generation only where frame generation is worth it (see
-    // `plan`); its launcher turns it on whenever AMD's files are there, and
-    // then keeps a fifth of the card from textures.
-    if let Some(fx) = &paths.fidelityfx {
-        set(&mut env, "VICTORY_FIDELITYFX_DIR", fx);
-    }
-    if !hw.frame_generation() {
-        set(&mut env, "VICTORY_FSR_FRAMEGEN", "0");
-    }
-    if p.graphics == Graphics::Ultra {
-        set(&mut env, RAY_TRACING, "1");
-        set(&mut env, "VICTORY_SKIP_RT_TRACE", "0");
-    }
-    (p.graphics, env)
-}
-
 /// `text` (a settings file of `VICTORY_X=value` lines) with the plan's lines
 /// set and unset; its other lines stay.
 pub fn apply(text: &str, p: &Plan) -> String {
@@ -271,28 +217,6 @@ mod tests {
         let back = apply(&file, &plan(Graphics::Quality, &hw));
         assert!(!back.contains("VICTORY_BVH_BUILDER") && back.contains("VICTORY_AMBIENT_SPECULAR="));
         assert_eq!(back.matches("VICTORY_THIN_THREADS").count(), 1);
-    }
-
-    #[test]
-    fn hydra_gets_the_preset_and_keeps_its_own_tuning() {
-        let paths = HydraPaths { game_dir: "D:/Game".into(), streamline: Some("D:/sl".into()), fidelityfx: Some("D:/fx".into()) };
-        let get = |env: &[(String, String)], k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
-        let (g, env) = hydra_env(Graphics::Auto, &pc("NVIDIA GeForce RTX 3060", 11.8, 12), &paths);
-        assert_eq!(g, Graphics::Performance);
-        assert_eq!(get(&env, "VICTORY_CONSOLE").as_deref(), Some("series-s"));
-        assert_eq!(get(&env, "VICTORY_DLSS_MODE").as_deref(), Some("performance"));
-        assert_eq!(get(&env, "VICTORY_FSR_FRAMEGEN").as_deref(), Some("0"));
-        assert_eq!(get(&env, "VICTORY_GAME_DIR").as_deref(), Some("D:/Game"));
-        // Its own 6-core counts are left to it.
-        assert_eq!(get(&env, "VICTORY_THIN_THREADS"), None);
-        assert!(get(&env, "VICTORY_LOG").unwrap().contains("victory_gpu::host=info"));
-        let (u, env) = hydra_env(Graphics::Ultra, &pc("NVIDIA GeForce RTX 4070", 12.0, 16), &HydraPaths { streamline: None, ..paths });
-        assert_eq!(u, Graphics::Ultra);
-        assert_eq!(get(&env, "VICTORY_CONSOLE").as_deref(), Some("series-x"));
-        assert_eq!(get(&env, RAY_TRACING).as_deref(), Some("1"));
-        assert_eq!(get(&env, "VICTORY_SKIP_RT_TRACE").as_deref(), Some("0"));
-        assert_eq!(get(&env, "VICTORY_DLSS"), None);
-        assert_eq!(get(&env, "VICTORY_FSR_FRAMEGEN"), None);
     }
 
     #[test]

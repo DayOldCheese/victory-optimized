@@ -1,5 +1,7 @@
-//! Child processes (cargo, git, victory.exe) run on their own; their output
-//! comes to the GUI a line at a time, so the window stays responsive.
+//! Child processes (cargo, the layer's launcher) run on their own; their
+//! output comes to the app a line at a time, so the window stays responsive.
+//! Each runs in a process group of its own (a Windows job object), so that
+//! Stop ends what it started too: a launcher's game, a preload's workers.
 
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
@@ -26,6 +28,122 @@ pub struct Job {
     output: Arc<Mutex<Lines>>,
     state: Arc<Mutex<State>>,
     child: Arc<Mutex<Option<Child>>>,
+    group: Option<group::Group>,
+}
+
+/// A process group: every process started by the one put in it belongs to
+/// it too, so ending the group ends them all.
+#[cfg(windows)]
+mod group {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW, TerminateJobObject};
+
+    /// The job object's handle (as a number: it is used from other threads).
+    pub struct Group(usize);
+
+    impl Group {
+        /// A group holding `child` (and what it starts from now on).
+        pub fn of(child: &std::process::Child) -> Option<Group> {
+            // SAFETY: plain Win32 calls; the handle is closed on drop.
+            unsafe {
+                let job: HANDLE = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+                if job.is_null() {
+                    return None;
+                }
+                if AssignProcessToJobObject(job, child.as_raw_handle() as HANDLE) == 0 {
+                    CloseHandle(job);
+                    return None;
+                }
+                Some(Group(job as usize))
+            }
+        }
+
+        /// Ends every process in the group.
+        pub fn end(&self) {
+            // SAFETY: our job object.
+            unsafe { TerminateJobObject(self.0 as HANDLE, 1) };
+        }
+    }
+
+    impl Drop for Group {
+        fn drop(&mut self) {
+            // Closing the handle ends nothing (no kill-on-close limit): a game
+            // goes on when the app is closed.
+            // SAFETY: our job object, closed once.
+            unsafe { CloseHandle(self.0 as HANDLE) };
+        }
+    }
+}
+
+#[cfg(not(windows))]
+mod group {
+    pub struct Group;
+    impl Group {
+        pub fn of(_: &std::process::Child) -> Option<Group> {
+            None
+        }
+        pub fn end(&self) {}
+    }
+}
+
+/// The ids of every layer process running on this PC (`victory.exe`),
+/// whoever started them.
+#[cfg(windows)]
+pub fn layers_running() -> Vec<u32> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS};
+    let mut ids = Vec::new();
+    // SAFETY: a process snapshot read and closed here.
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snap == INVALID_HANDLE_VALUE {
+            return ids;
+        }
+        let mut e: PROCESSENTRY32W = std::mem::zeroed();
+        e.dwSize = size_of::<PROCESSENTRY32W>() as u32;
+        let mut more = Process32FirstW(snap, &mut e) != 0;
+        while more {
+            let end = e.szExeFile.iter().position(|&c| c == 0).unwrap_or(e.szExeFile.len());
+            if String::from_utf16_lossy(&e.szExeFile[..end]).eq_ignore_ascii_case("victory.exe") {
+                ids.push(e.th32ProcessID);
+            }
+            more = Process32NextW(snap, &mut e) != 0;
+        }
+        CloseHandle(snap);
+    }
+    ids
+}
+
+#[cfg(not(windows))]
+pub fn layers_running() -> Vec<u32> {
+    Vec::new()
+}
+
+/// Ends the processes `ids` (the player asked for it); how many ended.
+#[cfg(windows)]
+pub fn end_processes(ids: &[u32]) -> usize {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
+    ids.iter()
+        .filter(|&&id| {
+            // SAFETY: a process opened for termination and closed here.
+            unsafe {
+                let h = OpenProcess(PROCESS_TERMINATE, 0, id);
+                if h.is_null() {
+                    return false;
+                }
+                let ok = TerminateProcess(h, 1) != 0;
+                CloseHandle(h);
+                ok
+            }
+        })
+        .count()
+}
+
+#[cfg(not(windows))]
+pub fn end_processes(_: &[u32]) -> usize {
+    0
 }
 
 /// Lines kept per job: older ones are dropped.
@@ -78,6 +196,7 @@ impl Job {
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
+        let mut grouped = None;
         match cmd.spawn() {
             Ok(mut c) => {
                 if let Some(o) = c.stdout.take() {
@@ -86,6 +205,7 @@ impl Job {
                 if let Some(e) = c.stderr.take() {
                     pump(output.clone(), e);
                 }
+                grouped = group::Group::of(&c);
                 *child.lock().unwrap() = Some(c);
                 // Waits for the end without holding the lock all along, so
                 // `stop` can kill the child meanwhile.
@@ -114,7 +234,7 @@ impl Job {
                 *state.lock().unwrap() = State::NotStarted(e.to_string());
             }
         }
-        Job { name: name.to_owned(), began: std::time::Instant::now(), output, state, child }
+        Job { name: name.to_owned(), began: std::time::Instant::now(), output, state, child, group: grouped }
     }
 
     pub fn state(&self) -> State {
@@ -125,9 +245,12 @@ impl Job {
         self.state() == State::Running
     }
 
-    /// Ends the child at once (Windows has no gentle signal for a process
-    /// without a window of its own).
+    /// Ends the child and everything it started, at once (Windows has no
+    /// gentle signal for a process without a window of its own).
     pub fn stop(&self) {
+        if let Some(g) = &self.group {
+            g.end();
+        }
         if let Some(c) = self.child.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
             let _ = c.kill();
         }
@@ -147,59 +270,9 @@ impl Job {
     }
 }
 
-/// Runs a short command to the end and returns its output (for git queries).
-pub fn run_now(dir: &Path, program: &str, args: &[&str]) -> Result<String, String> {
-    let mut cmd = Command::new(program);
-    cmd.args(args).current_dir(dir).stdin(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000);
-    }
-    let out = cmd.output().map_err(|e| format!("{program}: {e}"))?;
-    let text = String::from_utf8_lossy(&out.stdout).into_owned();
-    if out.status.success() {
-        Ok(text)
-    } else {
-        Err(format!("{program} {}: {}{}", args.join(" "), text, String::from_utf8_lossy(&out.stderr)))
-    }
-}
-
-/// The sum of libtest's "test result:" lines: passed, failed, ignored, and
-/// how many test binaries reported.
-pub fn test_totals(lines: &[String]) -> (u64, u64, u64, u64) {
-    let (mut p, mut f, mut i, mut n) = (0, 0, 0, 0);
-    for l in lines.iter().filter(|l| l.starts_with("test result:")) {
-        let num = |key: &str| {
-            l.split(';')
-                .find(|part| part.trim_end().ends_with(key))
-                .and_then(|part| part.split_whitespace().rev().nth(1))
-                .and_then(|x| x.parse::<u64>().ok())
-                .unwrap_or(0)
-        };
-        p += num("passed");
-        f += num("failed");
-        i += num("ignored");
-        n += 1;
-    }
-    (p, f, i, n)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_lines_are_summed() {
-        let lines: Vec<String> = [
-            "test result: ok. 191 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 0.9s",
-            "noise",
-            "test result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.1s",
-        ]
-        .map(String::from)
-        .to_vec();
-        assert_eq!(test_totals(&lines), (195, 1, 7, 2));
-    }
 
     #[test]
     fn lines_from_goes_on_across_dropped_lines() {
@@ -207,7 +280,7 @@ mod tests {
         for i in 0..KEEP + 5 {
             push(&out, i.to_string());
         }
-        let job = Job { name: String::new(), began: std::time::Instant::now(), output: Arc::new(out), state: Arc::new(Mutex::new(State::Running)), child: Arc::new(Mutex::new(None)) };
+        let job = Job { name: String::new(), began: std::time::Instant::now(), output: Arc::new(out), state: Arc::new(Mutex::new(State::Running)), child: Arc::new(Mutex::new(None)), group: None };
         let (l, end) = job.lines_from(0);
         assert_eq!((l.len(), l[0].as_str(), end), (KEEP, "5", KEEP + 5));
         let (l, end2) = job.lines_from(KEEP + 3);
@@ -227,5 +300,24 @@ mod tests {
         }
         assert_eq!(job.state(), State::Succeeded);
         assert!(job.lines().iter().any(|l| l.trim() == "hello"), "{:?}", job.lines());
+    }
+
+    /// Stop ends what the job's process started too.
+    #[cfg(windows)]
+    #[test]
+    fn stop_ends_the_processes_a_job_started() {
+        let dir = std::env::temp_dir();
+        // cmd starts a second cmd that waits about a minute.
+        let job = Job::start("tree", &dir, "cmd", &["/C".into(), "cmd /C ping -n 60 127.0.0.1 >NUL".into()], &[]);
+        assert!(job.group.is_some(), "the job got no process group");
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        job.stop();
+        for _ in 0..100 {
+            if !job.running() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(!job.running());
     }
 }

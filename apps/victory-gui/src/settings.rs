@@ -1,7 +1,6 @@
-//! The GUI's own settings, kept in `%APPDATA%\victory-optimized\gui.toml`
+//! The app's own settings, kept in `%APPDATA%\victory-optimized\gui.toml`
 //! (outside the repository, so paths on this machine are never committed).
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -9,43 +8,24 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Settings {
-    /// The repository: where cargo and git run.
+    /// The repository: where Mandy's layer is built and launched from.
     pub repo: PathBuf,
-    /// The title's executable, as the user chose it.
+    /// The title's executable, as the player chose it.
     pub game_exe: String,
-    /// Arguments for the title, after `--`.
-    pub game_args: String,
-    /// `play`, `raytracing`, `safe` or `stable` (`victory_core::profiles`).
-    pub profile: String,
-    /// Switches the user set by hand: variable -> value (an empty value
-    /// means "off": the profile's value is not used).
-    pub overrides: BTreeMap<String, String>,
-    /// A checkout of NVIDIA/DLSS (its `include` and `lib`), for builds with
-    /// DLSS; empty: looked for as `sdk\DLSS` beside the repository.
-    pub dlss_sdk: String,
-    /// Which layer Launch runs: `mandy` (this repository's own) or
-    /// `vnvidia`: a checkout of trustno1-coder/VIctory-NVIDIA (foxhound's
-    /// line), started through its own launcher with its tested settings.
-    pub layer: String,
-    /// That checkout; empty: `mandy-vn` beside the repository.
-    pub vn_dir: String,
-    /// The graphics preset for it (`crate::optimal::Graphics`); the rest of
-    /// the launch is picked from the hardware.
-    pub vn_graphics: String,
-    /// A checkout of ToLIManl/VIctory-Hydra (cool_fox's line with the
-    /// community's processor work); empty: `mandy-hydra` beside the
-    /// repository. It takes the same graphics preset.
-    pub hydra_dir: String,
+    /// The graphics preset (`crate::optimal::Graphics`); the rest of the
+    /// launch is picked from the hardware.
+    #[serde(alias = "vn_graphics")]
+    pub graphics: String,
 }
 
-/// Helper threads for a 6-core processor in VIctory-NVIDIA. Its defaults
-/// start 8 list translators, 6 landing and 6 view threads and 8 pipeline
-/// workers beside the title's own threads; these are the counts
-/// Maykzera/victory-rtx3060 measured best on an RTX 3060 with a Ryzen 5
-/// 5600X ("more helper threads are worse"), and the helpers run at the
-/// submitting thread's raised priority (its own `VICTORY_HELPER_PRIORITY`:
-/// its notes saw them woken and not running for 4-11 ms a frame while the
-/// title's workers held every processor; scarlet-fps f52eefb82 does the same).
+/// Helper threads for a 6-core processor. The layer's defaults start 8 list
+/// translators, 6 landing and 6 view threads and 8 pipeline workers beside
+/// the title's own threads; these are the counts Maykzera/victory-rtx3060
+/// measured best on an RTX 3060 with a Ryzen 5 5600X ("more helper threads
+/// are worse"), and the helpers run at the submitting thread's raised
+/// priority (`VICTORY_HELPER_PRIORITY`: the layer's notes saw them woken and
+/// not running for 4-11 ms a frame while the title's workers held every
+/// processor; scarlet-fps f52eefb82 does the same).
 pub const SIX_CORES: [(&str, &str); 5] = [
     ("VICTORY_THIN_THREADS", "4"),
     ("VICTORY_UNDER_THREADS", "3"),
@@ -59,13 +39,13 @@ fn file() -> Option<PathBuf> {
     Some(PathBuf::from(base).join("victory-optimized").join("gui.toml"))
 }
 
-/// The repository this GUI belongs to: the first folder above its own
-/// executable (or the current folder) that holds the workspace.
+/// The repository this app belongs to: the first folder above its own
+/// executable (or the current folder) that holds the layer's launcher.
 fn find_repo() -> PathBuf {
     let starts = [std::env::current_exe().ok(), std::env::current_dir().ok()];
     for start in starts.into_iter().flatten() {
         for dir in start.ancestors() {
-            if dir.join("Cargo.toml").is_file() && dir.join("crates").join("victory-core").is_dir() {
+            if dir.join("Cargo.toml").is_file() && dir.join("scripts").join("play-nvidia.ps1").is_file() {
                 return dir.to_path_buf();
             }
         }
@@ -76,18 +56,12 @@ fn find_repo() -> PathBuf {
 impl Settings {
     pub fn load() -> Settings {
         let mut s: Settings = file().and_then(|f| std::fs::read_to_string(f).ok()).and_then(|t| toml::from_str(&t).ok()).unwrap_or_default();
-        // An empty or relative path would resolve against wherever the GUI
-        // was started from: only an absolute one that holds the workspace.
-        if !s.repo.is_absolute() || !s.repo.join("Cargo.toml").is_file() {
+        // An empty or relative path would resolve against wherever the app
+        // was started from: only an absolute one that holds the launcher.
+        if !s.repo.is_absolute() || !s.repo.join("scripts").join("play-nvidia.ps1").is_file() {
             s.repo = find_repo();
         }
-        if victory_core::profiles::Profile::parse(&s.profile).is_none() {
-            s.profile = "play".into();
-        }
-        if !matches!(s.layer.as_str(), "mandy" | "vnvidia" | "hydra") {
-            s.layer = "mandy".into();
-        }
-        s.vn_graphics = crate::optimal::Graphics::parse(&s.vn_graphics).name().to_owned();
+        s.graphics = crate::optimal::Graphics::parse(&s.graphics).name().to_owned();
         s
     }
 
@@ -100,83 +74,31 @@ impl Settings {
         std::fs::write(&f, text).map_err(|e| e.to_string())
     }
 
-    /// The environment a launch gets: the profile's switches with the
-    /// overrides over them (an override that turns a switch off is "0").
-    /// With DLSS asked for, `VICTORY_DLSS_DIR` is the SDK's runtime folder
-    /// unless set by hand.
-    pub fn launch_env(&self) -> Vec<(String, String)> {
-        let profile = victory_core::profiles::Profile::parse(&self.profile).unwrap_or(victory_core::profiles::Profile::Play);
-        let mut env = profile.env(&self.overrides);
-        let dlss = env.iter().any(|(k, v)| k == "VICTORY_UPSCALE" && v.eq_ignore_ascii_case("dlss"));
-        if dlss
-            && !env.iter().any(|(k, _)| k == "VICTORY_DLSS_DIR")
-            && let Some(sdk) = self.dlss_sdk_dir()
-        {
-            env.push(("VICTORY_DLSS_DIR".into(), sdk.join("lib").join("Windows_x86_64").join("rel").display().to_string()));
-        }
-        env
+    /// The layer's launcher.
+    pub fn launcher(&self) -> PathBuf {
+        self.repo.join("scripts").join("play-nvidia.ps1")
     }
 
-    /// The VIctory-NVIDIA checkout, if there is one (with its launcher).
-    pub fn vn_checkout(&self) -> Option<PathBuf> {
-        let dir = if self.vn_dir.trim().is_empty() { self.repo.parent()?.join("mandy-vn") } else { PathBuf::from(self.vn_dir.trim()) };
-        dir.join("scripts").join("play-nvidia.ps1").is_file().then_some(dir)
+    /// The layer's release build, which the launcher runs.
+    pub fn layer_exe(&self) -> PathBuf {
+        self.repo.join("target").join("release").join("victory.exe")
     }
 
-    /// The VIctory-Hydra checkout, if there is one (with its launcher).
-    pub fn hydra_checkout(&self) -> Option<PathBuf> {
-        let dir = if self.hydra_dir.trim().is_empty() { self.repo.parent()?.join("mandy-hydra") } else { PathBuf::from(self.hydra_dir.trim()) };
-        dir.join("Play-VIctory.cmd").is_file().then_some(dir)
-    }
-
-    /// Whether Launch runs VIctory-Hydra.
-    pub fn uses_hydra(&self) -> bool {
-        self.layer == "hydra"
-    }
-
-    /// Whether Launch runs VIctory-NVIDIA.
-    pub fn uses_vn(&self) -> bool {
-        self.layer == "vnvidia"
-    }
-
-    /// The DLSS SDK, if there is one: the one set, else `sdk\DLSS` beside
-    /// the repository. Only one with the NGX loader library counts.
-    pub fn dlss_sdk_dir(&self) -> Option<PathBuf> {
-        let set = PathBuf::from(&self.dlss_sdk);
-        let guess = self.repo.parent().map(|p| p.join("sdk").join("DLSS"));
-        let dir = if self.dlss_sdk.trim().is_empty() { guess? } else { set };
-        dir.join("lib").join("Windows_x86_64").join("x64").join("nvsdk_ngx_d.lib").is_file().then_some(dir)
+    /// NVIDIA's Streamline and DLSS files, where the launcher looks for them.
+    pub fn dlss_files(&self) -> bool {
+        self.repo.join("nvidia-sdk").join("Streamline").join("bin").join("x64").join("sl.interposer.dll").is_file()
     }
 }
 
-
 #[cfg(test)]
 mod tests {
-
+    /// Settings written by earlier versions still load: the old preset name
+    /// is taken, the fields that are gone are passed over.
     #[test]
-    fn the_dlss_sdk_is_found_beside_the_repository_and_named_to_the_title() {
-        let top = tempfile::tempdir().unwrap();
-        let repo = top.path().join("Mandy");
-        std::fs::create_dir_all(&repo).unwrap();
-        let mut s = super::Settings { repo: repo.clone(), profile: "play".into(), ..Default::default() };
-        assert_eq!(s.dlss_sdk_dir(), None);
-        let lib = top.path().join("sdk").join("DLSS").join("lib").join("Windows_x86_64").join("x64");
-        std::fs::create_dir_all(&lib).unwrap();
-        std::fs::write(lib.join("nvsdk_ngx_d.lib"), b"").unwrap();
-        assert_eq!(s.dlss_sdk_dir(), Some(top.path().join("sdk").join("DLSS")));
-        // Only with DLSS asked for does the title get the runtime's folder.
-        assert!(!s.launch_env().iter().any(|(k, _)| k == "VICTORY_DLSS_DIR"));
-        s.overrides.insert("VICTORY_UPSCALE".into(), "dlss".into());
-        let env = s.launch_env();
-        let dir = env.iter().find(|(k, _)| k == "VICTORY_DLSS_DIR").map(|(_, v)| v.clone()).unwrap();
-        assert!(dir.ends_with("rel"), "{dir}");
-    }
-
-    #[test]
-    fn an_empty_repo_path_is_replaced_by_the_workspace() {
-        let s = super::Settings { repo: std::path::PathBuf::new(), ..Default::default() };
-        assert!(!s.repo.is_absolute());
-        let found = super::find_repo();
-        assert!(found.is_absolute() && found.join("crates").join("victory-core").is_dir(), "{found:?}");
+    fn an_older_settings_file_still_loads() {
+        let old = "game_exe = \"D:/Game/game.exe\"\nprofile = \"fast\"\nlayer = \"vnvidia\"\nvn_graphics = \"quality\"\n";
+        let s: super::Settings = toml::from_str(old).unwrap();
+        assert_eq!(s.game_exe, "D:/Game/game.exe");
+        assert_eq!(s.graphics, "quality");
     }
 }
