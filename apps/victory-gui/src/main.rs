@@ -588,7 +588,7 @@ impl App {
         let plan = optimal::plan(optimal::Graphics::parse(&self.s.vn_graphics), &self.hardware);
         ui.label(
             RichText::new(format!(
-                "For {} ({:.0} GB) and {} processor threads: {}; shaders made before the game{}{}.",
+                "For {} ({:.0} GB) and {} processor threads: {}; shaders translated before the game{}{}.",
                 if self.hardware.gpu_name.is_empty() { "this card" } else { &self.hardware.gpu_name },
                 self.hardware.vram_gb,
                 self.hardware.threads,

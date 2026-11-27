@@ -12,9 +12,10 @@
 //!   AMD's FSR 3 in its place smears below about 15 rendered fps.
 //! - Fewer helper threads on processors of 12 threads or fewer (see
 //!   [`crate::settings::SIX_CORES`]).
-//! - Shaders and pipelines made before the game: without it the driver
-//!   compiled about 400 pipelines while playing, and up to 1,800 draws a
-//!   frame were dropped (run 21:09).
+//! - Shaders translated before the game (`-PreloadShaders`). Not the full
+//!   preload's pipelines: making every pipeline earlier runs used took far
+//!   too long on a Ryzen 5 5600X; the driver's own cache and the game's
+//!   loading make the ones it needs.
 //! - Ray tracing only when asked for (Ultra): the title's ray-tracing
 //!   structure builder runs, but slowly and with faults on NVIDIA cards today
 //!   (VIctory-NVIDIA's own menu: "RAY TRACING (SLOW, BROKEN)").
@@ -137,7 +138,7 @@ pub fn plan(asked: Graphics, hw: &Hardware) -> Plan {
         args.extend(["-Res".into(), "1440".into()]);
     }
     args.extend(["-Dlss".into(), dlss.into()]);
-    args.push("-Preload".into());
+    args.push("-PreloadShaders".into());
     if !hw.frame_generation() {
         args.push("-NoFrameGenReady".into());
     }
@@ -187,7 +188,8 @@ mod tests {
         let p = plan(Graphics::Auto, &pc("NVIDIA GeForce RTX 3060", 11.8, 12));
         assert_eq!(p.graphics, Graphics::Performance);
         assert!(p.args.contains(&"-SeriesS".to_owned()));
-        assert!(p.args.contains(&"-Preload".to_owned()));
+        assert!(p.args.contains(&"-PreloadShaders".to_owned()));
+        assert!(!p.args.contains(&"-Preload".to_owned()));
         assert!(p.args.contains(&"-NoFrameGenReady".to_owned()));
         assert!(p.set.iter().any(|(k, v)| k == "VICTORY_THIN_THREADS" && v == "4"));
         assert!(p.unset.contains(&RAY_TRACING.to_owned()));
