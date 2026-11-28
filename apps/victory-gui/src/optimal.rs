@@ -76,11 +76,6 @@ pub struct Hardware {
     pub gpu_name: String,
     pub vram_gb: f64,
     pub threads: usize,
-    /// MFG Unlocker's DLL, if the player fetched it (`victory get-mfg`: its
-    /// author's release, checked against the SHA-256 published with it, into
-    /// `%LOCALAPPDATA%ictory\mfg-unlocker`). Someone else's mod; fetching it
-    /// is the player's choice, and then it is used.
-    pub mfg_unlocker: Option<String>,
 }
 
 impl Hardware {
@@ -88,11 +83,7 @@ impl Hardware {
     pub fn here() -> Hardware {
         let (vram_gb, gpu_name) = crate::sysinfo::adapter().unwrap_or((0.0, String::new()));
         let threads = std::thread::available_parallelism().map_or(0, |n| n.get());
-        let mfg_unlocker = std::env::var_os("LOCALAPPDATA")
-            .map(|base| std::path::PathBuf::from(base).join("victory").join("mfg-unlocker").join("MFGUnlocker.dll"))
-            .filter(|dll| dll.is_file())
-            .map(|dll| dll.display().to_string());
-        Hardware { gpu_name, vram_gb, threads, mfg_unlocker }
+        Hardware { gpu_name, vram_gb, threads }
     }
 
     /// An RTX 40 or 50 card: DLSS frame generation runs there.
@@ -156,14 +147,11 @@ pub const MENU_CHOICES: [&str; 8] = [
 /// 2026-11-28 11:31). The layer self-tests the driver heap before the
 /// title's first code and turns it off for the run if that fails.
 ///
-/// On trial now at level 2: the title's buffers too (their refreshes were
-/// still 19-20 ms of the submitting thread's 80, and their card copies the
-/// 99 hash and 359 compare passes a frame on the card, run 2026-11-28 12:29),
-/// which the layer allows only with late wait off (`VICTORY_LATE_WAIT=0`:
-/// every submission waited for, where the relay would let them run ahead).
-/// Whether that costs more than it saves is what the run is for.
-pub const IN_PLACE: [(&str, &str); 4] =
-    [("VICTORY_INPLACE", "2"), ("VICTORY_LATE_WAIT", "0"), ("VICTORY_UMA_DRIVER", "1"), ("VICTORY_UMA_DIRECT", "1")];
+/// Level 1, not 2: level 2 needs late wait off, and a 9-minute run so (2026-11-28
+/// 12:45) fell to 6.0 fps from 9-12, the submitting thread up to 48.7 ms, and
+/// FSR 3 frame generation stayed off (it needs the line of submissions late
+/// wait runs).
+pub const IN_PLACE: [(&str, &str); 3] = [("VICTORY_INPLACE", "1"), ("VICTORY_UMA_DRIVER", "1"), ("VICTORY_UMA_DIRECT", "1")];
 
 /// The layer's own switches that ToLIManl/VIctory-Hydra's launcher
 /// (`Play-VIctory.cmd`, GPL-3.0-or-later) turns on and Mandy's base launcher
@@ -231,11 +219,6 @@ pub fn plan(asked: Graphics, hw: &Hardware) -> Plan {
     args.extend(["-Dlss".into(), dlss.into()]);
     args.push("-PreloadShaders".into());
     args.push("-FrameGen".into());
-    // With MFG Unlocker on an RTX 20 or 30 card, DLSS frame generation shows up to four
-    // frames for each one rendered (the layer gives no more than the driver says it does).
-    if hw.mfg_unlocker.is_some() && !hw.frame_generation() {
-        args.extend(["-FrameGenX".into(), "4".into()]);
-    }
     let mut set: Vec<(String, String)> = HYDRA_SET.iter().chain(IN_PLACE.iter()).map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect();
     let mut unset: Vec<String> = MENU_CHOICES.iter().map(|k| (*k).to_owned()).collect();
     if hw.threads > 0 && hw.threads <= 12 {
@@ -243,10 +226,8 @@ pub fn plan(asked: Graphics, hw: &Hardware) -> Plan {
     } else {
         unset.extend(crate::settings::SIX_CORES.iter().map(|(k, _)| (*k).to_owned()));
     }
-    match &hw.mfg_unlocker {
-        Some(dll) => set.push(("VICTORY_MFG_UNLOCKER_DLL".into(), dll.clone())),
-        None => unset.push("VICTORY_MFG_UNLOCKER_DLL".into()),
-    }
+    // MFG Unlocker is not used (the player's choice: FSR 3 frame generation).
+    unset.push("VICTORY_MFG_UNLOCKER_DLL".into());
     if graphics == Graphics::Ultra {
         set.push((RAY_TRACING.into(), "1".into()));
     } else {
@@ -278,7 +259,7 @@ mod tests {
     use super::*;
 
     fn pc(name: &str, vram: f64, threads: usize) -> Hardware {
-        Hardware { gpu_name: name.into(), vram_gb: vram, threads, mfg_unlocker: None }
+        Hardware { gpu_name: name.into(), vram_gb: vram, threads }
     }
 
     #[test]
@@ -292,9 +273,11 @@ mod tests {
         assert!(!p.args.contains(&"-NoFrameGenReady".to_owned()));
         assert!(p.set.iter().any(|(k, v)| k == "VICTORY_THIN_THREADS" && v == "4"));
         assert!(p.set.iter().any(|(k, v)| k == "VICTORY_CARD_BUFFERS_MB" && v == "1536"));
-        // Level 2 only with late wait off (the layer's rule: inplace.rs).
+        // Level 1 with late wait on (level 2 needs it off, which cost a third of
+        // the frame rate and frame generation).
         let get = |k: &str| p.set.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
-        assert!(get("VICTORY_INPLACE") != Some("2") || get("VICTORY_LATE_WAIT") == Some("0"));
+        assert_eq!(get("VICTORY_INPLACE"), Some("1"));
+        assert_eq!(get("VICTORY_LATE_WAIT"), None);
         // F1's saved console and frame generation do not override the app's.
         let file = apply("VICTORY_MENU_CONSOLE=series-x
 VICTORY_MENU_FRAMEGEN=5
@@ -335,15 +318,11 @@ VICTORY_AMBIENT_SPECULAR=
     }
 
     #[test]
-    fn mfg_unlocker_is_used_only_once_fetched() {
-        let mut hw = pc("NVIDIA GeForce RTX 3060", 11.8, 12);
-        let p = plan(Graphics::Auto, &hw);
+    fn mfg_unlocker_is_never_used() {
+        let p = plan(Graphics::Auto, &pc("NVIDIA GeForce RTX 3060", 11.8, 12));
         assert!(!p.args.contains(&"-FrameGenX".to_owned()));
         assert!(p.unset.iter().any(|k| k == "VICTORY_MFG_UNLOCKER_DLL"));
-        hw.mfg_unlocker = Some("C:/x/MFGUnlocker.dll".into());
-        let p = plan(Graphics::Auto, &hw);
-        assert!(p.args.windows(2).any(|w| w == ["-FrameGenX", "4"]));
-        assert!(p.set.iter().any(|(k, v)| k == "VICTORY_MFG_UNLOCKER_DLL" && v.ends_with("MFGUnlocker.dll")));
+        assert!(p.unset.iter().any(|k| k == "VICTORY_MFG_UNLOCKER"));
     }
 
     #[test]
