@@ -436,7 +436,10 @@ fn exact_unlocked() -> bool {
 /// submitting thread is not running while it lasts (run 93: 240-310 ms of
 /// its own time a frame beside 1,100-1,800 ms of "textures"): it waits.
 /// These say for what.
-pub(crate) static REFRESH_WAITS: [std::sync::atomic::AtomicU64; 4] = [const { std::sync::atomic::AtomicU64::new(0) }; 4];
+/// And of the rest (`VICTORY_CARD_TIME`'s line): 4 reads through the kernel,
+/// 5 hashing, 6 detiling. Whether detiling on the card would be worth it
+/// (0.07 ms a megabyte by the digest's note) is what 6 says.
+pub(crate) static REFRESH_WAITS: [std::sync::atomic::AtomicU64; 7] = [const { std::sync::atomic::AtomicU64::new(0) }; 7];
 
 /// `f`'s result, its time added to [`REFRESH_WAITS`]' place `slot`.
 fn waited<T>(slot: usize, f: impl FnOnce() -> T) -> T {
@@ -703,6 +706,10 @@ fn once() -> bool {
 /// cryptographic one, which took 0.27 ms a megabyte, four times the detiling
 /// it was to spare; nobody makes up textures to collide.)
 pub(crate) fn digest(bytes: &[u8]) -> Digest {
+    waited(5, || digest_of(bytes))
+}
+
+fn digest_of(bytes: &[u8]) -> Digest {
     const K: [u64; 8] = [
         0xa076_1d64_78bd_642f,
         0xe703_7ed1_a0b4_28db,
@@ -1621,7 +1628,7 @@ impl Staging {
     fn refresh_unlocked(&self, last: &mut Last, size: usize) -> usize {
         use std::sync::atomic::Ordering::Relaxed;
         let read = with_read(size, |read| {
-            if !crate::host::read_into(self.memory, read) {
+            if !waited(4, || crate::host::read_into(self.memory, read)) {
                 return false;
             }
             let hash = digest(read);
@@ -1654,7 +1661,7 @@ impl Staging {
         use std::sync::atomic::Ordering::Relaxed;
         let mut changed = false;
         let read = with_read(size, |read| {
-            if !crate::host::read_into(self.memory, read) {
+            if !waited(4, || crate::host::read_into(self.memory, read)) {
                 return false;
             }
             let hash = digest(read);
@@ -1711,6 +1718,10 @@ impl Staging {
 
     /// Detiles `tiled` (the texture's memory) into the staging buffer.
     fn detile(&self, tiled: &[u8]) {
+        waited(6, || self.detile_now(tiled));
+    }
+
+    fn detile_now(&self, tiled: &[u8]) {
         self.dirty.store(true, std::sync::atomic::Ordering::Relaxed);
         // Levels on demand: which levels are the title's is judged here,
         // once, for what the staging buffer holds from now on. The step
