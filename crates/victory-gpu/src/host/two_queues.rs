@@ -293,7 +293,6 @@ pub(crate) fn for_title<R>(kind: Option<u32>, after: u64, send: impl FnOnce() ->
 }
 
 /// The list type of the title queue whose submission this thread sends.
-#[cfg(feature = "diagnostics")]
 pub(crate) fn title_kind() -> Option<u32> {
     TITLE.get().map(|t| t.0)
 }

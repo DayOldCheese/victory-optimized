@@ -6478,6 +6478,12 @@ impl Host {
         let sending = crate::timeline::ticks();
         if late {
             *submitted += 1;
+            // How long the title's submission is on the card, by its queue's kind.
+            if let Some((ahead, behind)) = card_time::around(&self.device, two_queues::title_kind()) {
+                lists.insert(0, Some(ahead));
+                lists.push(Some(behind));
+                firsts.iter_mut().for_each(|first| *first += 1);
+            }
             #[cfg(feature = "diagnostics")]
             if let Some([front, behind]) = self.span_lists(*submitted) {
                 lists.insert(0, Some(front));
@@ -10041,11 +10047,11 @@ impl Meter {
             let [passes, pieces, compares] = [0, 1, 2].map(|i| CARD_PASSES[i].swap(0, Ordering::Relaxed) as f64 / frames);
             let wc_left = crate::shadow::WC_LEFT.swap(0, Ordering::Relaxed) as f64 / 1e6 / frames;
             if let Some(host) = host()
-                && let Some([(send_ms, sends), (compare_ms, checks)]) =
+                && let Some([(send_ms, sends), (compare_ms, checks), (direct_ms, directs), (compute_ms, computes), (copy_ms, copies)]) =
                     card_time::per_frame(frames, unsafe { host.queue.GetTimestampFrequency() }.unwrap_or(1))
             {
                 tracing::info!(
-                    "our lists of the copies in the card's memory, on the card per frame (VICTORY_CARD_TIME): sends and hashes                      {send_ms:.2} ms in {sends:.1} lists, compares {compare_ms:.2} ms in {checks:.1} lists"
+                    "on the card per frame (VICTORY_CARD_TIME): our lists of the copies in the card's memory, sends and hashes                      {send_ms:.2} ms in {sends:.1} lists, compares {compare_ms:.2} ms in {checks:.1} lists; the title's submissions,                      from its direct queue {direct_ms:.1} ms in {directs:.1}, from its compute queues {compute_ms:.1} ms in                      {computes:.1}, from its copy queues {copy_ms:.1} ms in {copies:.1}"
                 );
             }
             if passes + compares + wc_left > 0.0 {
