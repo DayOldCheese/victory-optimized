@@ -1395,6 +1395,8 @@ pub(crate) struct HostList {
     /// ([`HostList::leave_open`]): that reset finds nothing to undo. The
     /// list's title calls and epoch then, each plus one (0: not left open).
     left_open: [std::sync::atomic::AtomicU64; 2],
+    /// Its open block of stamps where its pipelines change (`card_profile`).
+    profile: Mutex<card_profile::Open>,
     /// Counts the list in [`ALIVE`] while it lives.
     _alive: Counted,
     /// The texts of the markers `note_op` set, in order (for device-removed
@@ -4405,6 +4407,7 @@ pub(crate) mod aside;
 pub(crate) mod awake;
 mod card_steps;
 mod card_time;
+pub(crate) mod card_profile;
 #[cfg(feature = "diagnostics")]
 pub(crate) mod indirects;
 mod font;
@@ -4843,6 +4846,7 @@ impl Host {
                 upscale: std::sync::atomic::AtomicU64::new(0),
                 hudless: std::sync::atomic::AtomicU64::new(0),
                 left_open: [const { std::sync::atomic::AtomicU64::new(0) }; 2],
+                profile: Mutex::default(),
                 _alive: Counted::new(),
                 #[cfg(feature = "diagnostics")]
                 notes,
@@ -7061,6 +7065,9 @@ impl HostList {
         self.batches_common();
         self.card_budget_out();
         self.take_coming();
+        if card_profile::on() {
+            card_profile::close(&self.list, &mut self.profile.lock().unwrap_or_else(|e| e.into_inner()));
+        }
         #[cfg(feature = "diagnostics")]
         if let Some((heap, back)) = self.stamps() {
             let count = (self.notes.lock().unwrap_or_else(|e| e.into_inner()).len() as u32).min(STAMPS - 1);
@@ -7172,6 +7179,7 @@ impl HostList {
     /// Only after the list's last submission finished (every one is waited
     /// for).
     pub(crate) fn reset(&self) {
+        card_profile::forget(&mut self.profile.lock().unwrap_or_else(|e| e.into_inner()));
         // Before the epoch moves on below.
         let left_open = self.still_left_open();
         self.changed_something();
@@ -7786,6 +7794,17 @@ impl HostList {
     /// The list binds a pipeline: it and its root signature are kept until
     /// the list is reset, and its name noted, the first time only (a kept
     /// pipeline's address names no other).
+    /// The host pipeline `pso` (the title's `name`) is set from here on
+    /// (`card_profile`).
+    pub(crate) fn profile_mark(&self, name: &str, pso: &ID3D12PipelineState) {
+        if !card_profile::on() {
+            return;
+        }
+        let Some(host) = host() else { return };
+        let mut open = self.profile.lock().unwrap_or_else(|e| e.into_inner());
+        card_profile::mark(&host.device, &self.list, &mut open, pso.as_raw() as u64, name);
+    }
+
     pub(crate) fn bind_pipeline(&self, name: &str, pso: &ID3D12PipelineState, root: &ID3D12RootSignature) {
         {
             let mut deferred = self.deferred();
@@ -10050,6 +10069,13 @@ impl Meter {
                 && let Some([(send_ms, sends), (compare_ms, checks), (direct_ms, directs), (compute_ms, computes), (copy_ms, copies)]) =
                     card_time::per_frame(frames, unsafe { host.queue.GetTimestampFrequency() }.unwrap_or(1))
             {
+                // SAFETY: a live queue.
+                card_profile::line(frames, unsafe { host.queue.GetTimestampFrequency() }.unwrap_or(1));
+                let [kept, left] = [0, 1].map(|i| crate::list::SYNCS[i].swap(0, Ordering::Relaxed) as f64 / frames);
+                tracing::info!(
+                    "the title's pipeline syncs per frame: {kept:.0} with a global UAV barrier, {left:.0} left out as nothing \
+                     since the last one stored (VICTORY_SYNC_QUIET)"
+                );
                 tracing::info!(
                     "on the card per frame (VICTORY_CARD_TIME): our lists of the copies in the card's memory, sends and hashes                      {send_ms:.2} ms in {sends:.1} lists, compares {compare_ms:.2} ms in {checks:.1} lists; the title's submissions,                      from its direct queue {direct_ms:.1} ms in {directs:.1}, from its compute queues {compute_ms:.1} ms in                      {computes:.1}, from its copy queues {copy_ms:.1} ms in {copies:.1}"
                 );

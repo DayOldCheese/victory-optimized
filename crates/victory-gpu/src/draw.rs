@@ -534,6 +534,10 @@ pub(crate) struct State {
     /// the indirect light follows (`crate::ambient`): root parameter, bytes
     /// into the view heap.
     ambient_tables: Vec<(u8, u32)>,
+    /// Nothing recorded since the last global UAV barrier of a pipeline sync
+    /// could have stored to memory: only draws and dispatches whose shaders
+    /// store nothing (`sync_needed`). False at the start of a list.
+    quiet: bool,
     /// What the host list has: pipeline, root signature, heaps.
     host_pipeline: usize,
     /// Graphics, compute.
@@ -1925,6 +1929,9 @@ impl State {
     /// False if the draw or dispatch must not run: a root SRV it reads
     /// could not be given a view.
     pub(crate) fn bind(&mut self, list: &HostList, p: &HostPipeline, compute: bool) -> bool {
+        if self.quiet && p.stages.iter().any(|s| s.translated().stores || s.shader.ambient.is_some()) {
+            self.quiet = false;
+        }
         let l = &list.list;
         // Textures picked by index, before anything asks for them.
         self.early_textures(list, p, compute);
@@ -2007,6 +2014,7 @@ impl State {
             // SAFETY: an open list and a live pipeline.
             unsafe { l.SetPipelineState(&p.pso) };
             self.host_pipeline = p.pso.as_raw() as usize;
+            list.profile_mark(&p.name, &p.pso);
             // The title may release the pipeline before it submits the list.
             list.bind_pipeline(&p.name, &p.pso, &p.root);
         }
@@ -5127,6 +5135,32 @@ impl State {
     }
 
     /// The title waits for earlier work (a barrier or a pipeline sync).
+    /// Something was recorded that may write memory other than through a
+    /// draw's targets (a copy, a resolve, a clear, an indirect execution, a
+    /// bottom-of-pipe write): the next pipeline sync waits for it.
+    pub(crate) fn wrote(&mut self) {
+        self.quiet = false;
+    }
+
+    /// At a pipeline sync: whether its global UAV barrier is needed, and from
+    /// it on nothing is unordered (`VICTORY_SYNC_QUIET=1`; else always).
+    ///
+    /// A UAV barrier orders shaders' stores against what comes after; render
+    /// target, depth and copy hazards of textures are the host's own state
+    /// changes of its copies (`ensure_state`). Where every draw and dispatch
+    /// since the last barrier stored nothing, and nothing else was recorded
+    /// that writes, the barrier orders nothing: the card drained its work for
+    /// it all the same (the title syncs between its passes; 8,000 draws a
+    /// world frame, 94 ms of the card's time on an RTX 3060, run 2026-11-28
+    /// 14:32). The first sync of each list is kept.
+    pub(crate) fn sync_needed(&mut self) -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let on = *ON.get_or_init(|| std::env::var_os("VICTORY_SYNC_QUIET").is_some_and(|v| v == "1"));
+        let needed = !on || !self.quiet;
+        self.quiet = true;
+        needed
+    }
+
     pub(crate) fn synced(&mut self) {
         if self.batch.as_ref().is_some_and(|b| b.wrote) {
             self.batch = None;

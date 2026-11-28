@@ -992,6 +992,7 @@ extern "system" fn copy_buffer_region(
     src_offset: u64,
     len: u64,
 ) {
+    mark_wrote(this);
     #[cfg(windows)]
     if let Some(list) = host_list(this)
         && let Some(to) = buffer_range(dst, dst_offset, len)
@@ -1024,6 +1025,7 @@ fn unlike(dst: This, src: This) -> bool {
 pub(crate) static SELF_COPIES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 extern "system" fn copy_resource(this: This, dst: This, src: This) {
+    mark_wrote(this);
     #[cfg(windows)]
     {
         let Some(list) = host_list(this) else {
@@ -1114,6 +1116,7 @@ extern "system" fn copy_texture_region(
     src: *const CopyLocation,
     source_box: *const [u32; 6],
 ) {
+    mark_wrote(this);
     #[cfg(windows)]
     {
         use windows::Win32::Graphics::Direct3D12::{D3D12_BOX, D3D12_TEXTURE_COPY_LOCATION};
@@ -1386,6 +1389,7 @@ extern "system" fn copy_texture_region_x(
     source_box: *const [u32; 6],
     _flags: u32,
 ) {
+    mark_wrote(this);
     copy_texture_region(this, dst, x, y, z, src, source_box);
 }
 
@@ -1397,6 +1401,7 @@ extern "system" fn resolve(
     src_sub: u32,
     format: u32,
 ) {
+    mark_wrote(this);
     #[cfg(windows)]
     if let Some(list) = host_list(this)
         && let (Some(to), Some(from)) = (
@@ -1473,6 +1478,7 @@ extern "system" fn clear_rtv(
     count: u32,
     rects: *const Rect,
 ) {
+    mark_wrote(this);
     #[cfg(windows)]
     {
         let (Some(list), Some(record)) = (host_list(this), crate::descriptor::rtv_record(handle))
@@ -1523,6 +1529,7 @@ extern "system" fn clear_dsv(
     count: u32,
     rects: *const Rect,
 ) {
+    mark_wrote(this);
     #[cfg(windows)]
     {
         use windows::Win32::Graphics::Direct3D12::D3D12_CLEAR_FLAGS;
@@ -1562,6 +1569,7 @@ extern "system" fn clear_dsv(
 /// `CopyMemoryToMemoryX(destination, source, size, flags)`: GPU addresses
 /// are title memory, copied at submission like buffer copies (if mapped).
 extern "system" fn copy_memory(this: This, dst: u64, src: u64, len: u64, _flags: u32) {
+    mark_wrote(this);
     #[cfg(windows)]
     if let Some(list) = host_list(this)
         && dst != 0
@@ -1621,6 +1629,7 @@ extern "system" fn resolve_queries(
     buffer: This,
     offset: u64,
 ) {
+    mark_wrote(this);
     const OCCLUSION: u32 = 0;
     const BINARY: u32 = 1;
     const TIMESTAMP: u32 = 2;
@@ -1671,6 +1680,20 @@ extern "system" fn set_pipeline(this: This, pipeline: This) {
     let _ = this;
 }
 
+/// The title's list `this` recorded something that may write memory other
+/// than through a draw's targets: its next pipeline sync is kept
+/// (`crate::draw::State::wrote`).
+fn mark_wrote(this: This) {
+    #[cfg(windows)]
+    with_state(this, |_, state| state.wrote());
+    #[cfg(not(windows))]
+    let _ = this;
+}
+
+/// Pipeline syncs per frame line: with their global UAV barrier, and left out
+/// as nothing since the last one stored (`crate::draw::State::sync_needed`).
+pub(crate) static SYNCS: [std::sync::atomic::AtomicU64; 2] = [const { std::sync::atomic::AtomicU64::new(0) }; 2];
+
 /// Pipeline syncs: waits for earlier work and cache flushes, at the top or
 /// bottom of the pipe `(flags, control, address, size)`. The host orders
 /// nothing between dispatches by itself: what shaders wrote is waited for
@@ -1681,7 +1704,15 @@ extern "system" fn set_pipeline(this: This, pipeline: This) {
 extern "system" fn sync(this: This, flags: u32, control: u32, address: u64, size: u64) {
     #[cfg(windows)]
     {
-        with_state(this, |_, state| state.synced());
+        let mut needed = true;
+        with_state(this, |_, state| {
+            state.synced();
+            needed = state.sync_needed();
+        });
+        SYNCS[usize::from(!needed)].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if !needed {
+            return;
+        }
         if let Some(list) = host_list(this) {
             use windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_BARRIER;
             #[cfg(feature = "diagnostics")]
@@ -2018,6 +2049,7 @@ extern "system" fn execute_indirect(
     count: This,
     count_offset: u64,
 ) {
+    mark_wrote(this);
     count_draw();
     let Some((stride, args)) = crate::signature::layout(signature) else {
         return;
@@ -2608,10 +2640,12 @@ extern "system" fn barrier_groups(this: This, count: u32, groups: *const u8) {
 /// 64 bits: done when the list has run, as the GPU would. Flag 1 writes the
 /// GPU timestamp instead (64-bit form), flag 2 the system timestamp.
 extern "system" fn write32(this: This, address: u64, value: u32, _flush: u32, _flags: u32) {
+    mark_wrote(this);
     defer_write(this, address, Written::Value(u64::from(value)), 4);
     value_written(this, address, u64::from(value));
 }
 extern "system" fn write64(this: This, address: u64, value: u64, _flush: u32, flags: u32) {
+    mark_wrote(this);
     const GPU_TIMESTAMP: u32 = 1;
     const SYSTEM_TIMESTAMP: u32 = 2;
     let what = match flags {

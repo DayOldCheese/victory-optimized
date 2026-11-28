@@ -243,6 +243,13 @@ pub fn plan(asked: Graphics, hw: &Hardware) -> Plan {
     // compute queue on the card would take, and what they would wait for.
     // It decides whether that queue is built.
     set.push(("VICTORY_ASYNC_QUEUE".into(), "plan".into()));
+    // Where the card's time goes, by the title's pipelines (two timestamps
+    // where a list's pipeline changes): the title's work took 94 ms of the
+    // card in a 112 ms world frame on an RTX 3060 (run 2026-11-28 14:32).
+    set.push(("VICTORY_CARD_PROFILE".into(), "1".into()));
+    // A pipeline sync whose global UAV barrier orders nothing (nothing since
+    // the last one stored) is left out: the card no longer drains for it.
+    set.push(("VICTORY_SYNC_QUIET".into(), "1".into()));
     if graphics == Graphics::Ultra {
         set.push((RAY_TRACING.into(), "1".into()));
     } else {
