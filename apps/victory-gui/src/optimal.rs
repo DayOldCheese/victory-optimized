@@ -120,6 +120,39 @@ pub struct Plan {
 /// The switches [`plan`] manages in the settings file.
 pub const RAY_TRACING: &str = "VICTORY_BVH_BUILDER";
 
+/// The layer's own switches that ToLIManl/VIctory-Hydra's launcher
+/// (`Play-VIctory.cmd`, GPL-3.0-or-later) turns on and Mandy's base launcher
+/// does not, at its values: its measured set on an RTX 3060 12 GB with a
+/// Ryzen 5 5600X (25.9-30.8 fps in light, 16.9-20.9 in heavy world scenes).
+/// Among them the card copies of the title's buffers and windows
+/// (Maykzera/victory-rtx3060 measured 1.5 GB of buffers on the card at 11 to
+/// 21.8 fps), the constants heap read in place, submissions prepared on a
+/// thread of their own up to 3 frames ahead and in larger batches. Mandy's
+/// helper-thread counts ([`crate::settings::SIX_CORES`]) stay over them.
+pub const HYDRA_SET: [(&str, &str); 21] = [
+    ("VICTORY_ASYNC_SUBMIT", "1"),
+    ("VICTORY_SUBMIT_FRAMES", "3"),
+    ("VICTORY_JOIN_PARTS", "24"),
+    ("VICTORY_JOIN_LISTS", "128"),
+    ("VICTORY_CARD_BUFFERS_MB", "1536"),
+    ("VICTORY_CARD_WINDOWS_MB", "1024"),
+    ("VICTORY_PORT_CONSTANTS", "1"),
+    ("VICTORY_HEAP_SYNC_EARLY", "1"),
+    ("VICTORY_LAND_SKIP", "1"),
+    ("VICTORY_LAND_THREADS", "4"),
+    ("VICTORY_WIDE_MERGE", "1"),
+    ("VICTORY_PLACED_ORDER", "1"),
+    ("VICTORY_FILL_TITLE", "2"),
+    ("VICTORY_ASK_EARLY", "2"),
+    ("VICTORY_KEEP_SHOWN", "1"),
+    ("VICTORY_WAIT_RESIDENT", "0"),
+    ("VICTORY_LIBRARY_STATIC_SAMPLERS", "1"),
+    ("VICTORY_DSTORAGE_IO", "handles"),
+    ("VICTORY_DSTORAGE_WORKERS", "3"),
+    ("VICTORY_PIPELINE_LOWEST", "0"),
+    ("VICTORY_WINDOWS_BAR_MB", "0"),
+];
+
 pub fn plan(asked: Graphics, hw: &Hardware) -> Plan {
     let graphics = match asked {
         Graphics::Auto if hw.series_x_class() => Graphics::Quality,
@@ -142,7 +175,7 @@ pub fn plan(asked: Graphics, hw: &Hardware) -> Plan {
     args.extend(["-Dlss".into(), dlss.into()]);
     args.push("-PreloadShaders".into());
     args.push("-FrameGen".into());
-    let mut set = Vec::new();
+    let mut set: Vec<(String, String)> = HYDRA_SET.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect();
     let mut unset = Vec::new();
     if hw.threads > 0 && hw.threads <= 12 {
         set.extend(crate::settings::SIX_CORES.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())));
@@ -193,6 +226,12 @@ mod tests {
         assert!(p.args.contains(&"-FrameGen".to_owned()));
         assert!(!p.args.contains(&"-NoFrameGenReady".to_owned()));
         assert!(p.set.iter().any(|(k, v)| k == "VICTORY_THIN_THREADS" && v == "4"));
+        assert!(p.set.iter().any(|(k, v)| k == "VICTORY_CARD_BUFFERS_MB" && v == "1536"));
+        // Each switch once.
+        let mut names: Vec<&String> = p.set.iter().map(|(k, _)| k).collect();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), p.set.len());
         assert!(p.unset.contains(&RAY_TRACING.to_owned()));
     }
 
