@@ -58,6 +58,9 @@ struct Ring {
     sums: HashMap<u64, (u64, u64)>,
     /// What each pipeline is called.
     names: HashMap<u64, String>,
+    /// Thread groups dispatched by each compute pipeline since the last
+    /// frame line, and its dispatches.
+    groups: HashMap<u64, (u64, u64)>,
     /// Blocks whose list ran out of blocks of its own, and blocks taken while
     /// their stamps were not all in.
     lost: [u64; 2],
@@ -102,6 +105,7 @@ fn make(device: &ID3D12Device) -> Option<Ring> {
             blocks: vec![Vec::new(); BLOCKS as usize],
             sums: HashMap::new(),
             names: HashMap::new(),
+            groups: HashMap::new(),
             lost: [0; 2],
         })
     }
@@ -194,6 +198,16 @@ pub(crate) fn mark(device: &ID3D12Device, list: &ID3D12GraphicsCommandList, open
     open.keys.push(key);
 }
 
+/// A dispatch of `groups` thread groups with the host pipeline `key`.
+pub(crate) fn dispatched(key: u64, groups: u64) {
+    let mut guard = RING.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(ring) = guard.as_mut() {
+        let e = ring.groups.entry(key).or_default();
+        e.0 += groups;
+        e.1 += 1;
+    }
+}
+
 /// Before `list` is closed: its open block ended.
 pub(crate) fn close(list: &ID3D12GraphicsCommandList, open: &mut Open) {
     let Some(b) = open.block.take() else { return };
@@ -222,13 +236,30 @@ pub(crate) fn line(frames: f64, frequency: u64) {
         ring.take(b, false);
     }
     let sums = std::mem::take(&mut ring.sums);
+    let dispatched = std::mem::take(&mut ring.groups);
     let mut by_name: HashMap<&str, (u64, u64)> = HashMap::new();
+    let mut groups: HashMap<&str, (u64, u64)> = HashMap::new();
     for (key, (ticks, n)) in &sums {
         let name = ring.names.get(key).map_or("?", String::as_str);
         let e = by_name.entry(name).or_default();
         e.0 += ticks;
         e.1 += n;
+        if let Some(&(g, d)) = dispatched.get(key) {
+            let e = groups.entry(name).or_default();
+            e.0 += g;
+            e.1 += d;
+        }
     }
+    // By the kind of the pipeline's first stage (compute, mesh, vertex).
+    let mut kinds: HashMap<&str, (u64, u64)> = HashMap::new();
+    for (name, (ticks, n)) in &by_name {
+        let kind = name.trim_start_matches('[').split_whitespace().next().unwrap_or("?");
+        let e = kinds.entry(kind).or_default();
+        e.0 += ticks;
+        e.1 += n;
+    }
+    let mut kinds: Vec<(&str, (u64, u64))> = kinds.into_iter().collect();
+    kinds.sort_unstable_by_key(|k| std::cmp::Reverse(k.1.0));
     let ms = |ticks: u64| ticks as f64 * 1e3 / frequency.max(1) as f64 / frames;
     let all: u64 = by_name.values().map(|v| v.0).sum();
     let intervals: u64 = by_name.values().map(|v| v.1).sum();
@@ -238,17 +269,28 @@ pub(crate) fn line(frames: f64, frequency: u64) {
         .iter()
         .take(16)
         .map(|(name, (ticks, n))| {
-            let name: String = name.chars().take(90).collect();
-            format!("{name} {:.2} ms in {:.0}", ms(*ticks), *n as f64 / frames)
+            let shown: String = name.chars().take(90).collect();
+            match groups.get(name) {
+                Some(&(g, d)) if d > 0 => format!(
+                    "{shown} {:.2} ms in {:.0} ({:.0} dispatches of {:.0} groups)",
+                    ms(*ticks),
+                    *n as f64 / frames,
+                    d as f64 / frames,
+                    g as f64 / d as f64
+                ),
+                _ => format!("{shown} {:.2} ms in {:.0}", ms(*ticks), *n as f64 / frames),
+            }
         })
         .collect();
     let lost = std::mem::take(&mut ring.lost);
+    let kinds: Vec<String> = kinds.iter().map(|(k, (t, n))| format!("{k} {:.1} ms in {:.0}", ms(*t), *n as f64 / frames)).collect();
     tracing::info!(
-        "the card's time by the title's pipelines per frame (VICTORY_CARD_PROFILE): {:.1} ms in {:.0} intervals of {} pipelines; \
-         the most: {}; ({} lists went on in another block, {} blocks let go before their stamps were in)",
+        "the card's time by the title's pipelines per frame (VICTORY_CARD_PROFILE): {:.1} ms in {:.0} intervals of {} pipelines \
+         (by their first stage: {}); the most: {}; ({} lists went on in another block, {} blocks let go before their stamps were in)",
         ms(all),
         intervals as f64 / frames,
         top.len(),
+        kinds.join(", "),
         shown.join(", "),
         lost[0],
         lost[1],

@@ -129,6 +129,10 @@ pub(crate) struct Translated {
     pub(crate) host: victory_shader::emit::HostShader,
     /// A compute program's threads in a group.
     pub(crate) threads: Option<[u32; 3]>,
+    /// What the log says of the console's programs: stage, wave size,
+    /// vector registers, code bytes, threads and LDS of a compute program
+    /// (to tell why a pipeline holds the card long, `card_profile`).
+    pub(crate) facts: String,
     pub(crate) used: Vec<victory_shader::UsedResource>,
     pub(crate) tables: crate::draw::TablePlan,
     /// Whether the shader's code can store to buffer memory ([`stores`]);
@@ -170,6 +174,8 @@ impl Shader {
                         hash = %self.hash,
                         user_data = t.host.user_data.len(),
                         samplers = t.host.samplers.len(),
+                        dxil = t.host.dxil.len(),
+                        native = %t.facts,
                         "shader translated"
                     ),
                     Err(e) => tracing::warn!(
@@ -213,6 +219,17 @@ fn translate(container: &[u8]) -> Result<Translated, String> {
         _ => None,
     });
     let stores_by_address = programs.is_empty() || programs.iter().any(stores_by_address);
+    let facts = programs
+        .iter()
+        .map(|p| {
+            let cs = match &p.io {
+                victory_shader::native::StageIo::Cs(cs) => format!(" threads {:?} lds {}", cs.threads, cs.lds_bytes()),
+                _ => String::new(),
+            };
+            format!("{:?} wave{} vgprs {} code {}{cs}", p.stage, if p.wave64 { 64 } else { 32 }, p.vgprs, p.code.len())
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
     let used = programs
         .into_iter()
         .find(|p| {
@@ -227,6 +244,7 @@ fn translate(container: &[u8]) -> Result<Translated, String> {
     Ok(Translated {
         host,
         threads,
+        facts,
         used,
         tables,
         stores,

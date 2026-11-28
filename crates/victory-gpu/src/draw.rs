@@ -3833,6 +3833,9 @@ impl State {
         }
         // SAFETY: an open list with everything set.
         unsafe { list.list.Dispatch(x, y, z) };
+        if crate::host::card_profile::on() {
+            crate::host::card_profile::dispatched(self.host_pipeline as u64, u64::from(x) * u64::from(y) * u64::from(z));
+        }
         self.buffers_written();
         DISPATCHED.fetch_add(1, Ordering::Relaxed);
         if let Some(role) = p.stages.first().and_then(|s| s.shader.ambient)
