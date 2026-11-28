@@ -536,6 +536,10 @@ fn main() -> Result<()> {
             title_args,
         } => {
             victory_hle::runtime::set_title_args(title_args);
+            // MFG Unlocker, when a launcher names its DLL (`VICTORY_MFG_UNLOCKER_DLL`, as
+            // `play` sets it): loaded before the layer makes its device or loads Streamline.
+            #[cfg(windows)]
+            play::load_mfg();
             run::run(&exe, unimplemented, strict, execute, console)
         }
         #[cfg(all(windows, feature = "diagnostics"))]

@@ -76,6 +76,11 @@ pub struct Hardware {
     pub gpu_name: String,
     pub vram_gb: f64,
     pub threads: usize,
+    /// MFG Unlocker's DLL, if the player fetched it (`victory get-mfg`: its
+    /// author's release, checked against the SHA-256 published with it, into
+    /// `%LOCALAPPDATA%ictory\mfg-unlocker`). Someone else's mod; fetching it
+    /// is the player's choice, and then it is used.
+    pub mfg_unlocker: Option<String>,
 }
 
 impl Hardware {
@@ -83,7 +88,11 @@ impl Hardware {
     pub fn here() -> Hardware {
         let (vram_gb, gpu_name) = crate::sysinfo::adapter().unwrap_or((0.0, String::new()));
         let threads = std::thread::available_parallelism().map_or(0, |n| n.get());
-        Hardware { gpu_name, vram_gb, threads }
+        let mfg_unlocker = std::env::var_os("LOCALAPPDATA")
+            .map(|base| std::path::PathBuf::from(base).join("victory").join("mfg-unlocker").join("MFGUnlocker.dll"))
+            .filter(|dll| dll.is_file())
+            .map(|dll| dll.display().to_string());
+        Hardware { gpu_name, vram_gb, threads, mfg_unlocker }
     }
 
     /// An RTX 40 or 50 card: DLSS frame generation runs there.
@@ -214,12 +223,21 @@ pub fn plan(asked: Graphics, hw: &Hardware) -> Plan {
     args.extend(["-Dlss".into(), dlss.into()]);
     args.push("-PreloadShaders".into());
     args.push("-FrameGen".into());
+    // With MFG Unlocker on an RTX 20 or 30 card, DLSS frame generation shows up to four
+    // frames for each one rendered (the layer gives no more than the driver says it does).
+    if hw.mfg_unlocker.is_some() && !hw.frame_generation() {
+        args.extend(["-FrameGenX".into(), "4".into()]);
+    }
     let mut set: Vec<(String, String)> = HYDRA_SET.iter().chain(IN_PLACE.iter()).map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect();
     let mut unset: Vec<String> = MENU_CHOICES.iter().map(|k| (*k).to_owned()).collect();
     if hw.threads > 0 && hw.threads <= 12 {
         set.extend(crate::settings::SIX_CORES.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())));
     } else {
         unset.extend(crate::settings::SIX_CORES.iter().map(|(k, _)| (*k).to_owned()));
+    }
+    match &hw.mfg_unlocker {
+        Some(dll) => set.push(("VICTORY_MFG_UNLOCKER_DLL".into(), dll.clone())),
+        None => unset.push("VICTORY_MFG_UNLOCKER_DLL".into()),
     }
     if graphics == Graphics::Ultra {
         set.push((RAY_TRACING.into(), "1".into()));
@@ -252,7 +270,7 @@ mod tests {
     use super::*;
 
     fn pc(name: &str, vram: f64, threads: usize) -> Hardware {
-        Hardware { gpu_name: name.into(), vram_gb: vram, threads }
+        Hardware { gpu_name: name.into(), vram_gb: vram, threads, mfg_unlocker: None }
     }
 
     #[test]
@@ -304,6 +322,18 @@ VICTORY_AMBIENT_SPECULAR=
         let back = apply(&file, &plan(Graphics::Quality, &hw));
         assert!(!back.contains("VICTORY_BVH_BUILDER") && back.contains("VICTORY_AMBIENT_SPECULAR="));
         assert_eq!(back.matches("VICTORY_THIN_THREADS").count(), 1);
+    }
+
+    #[test]
+    fn mfg_unlocker_is_used_only_once_fetched() {
+        let mut hw = pc("NVIDIA GeForce RTX 3060", 11.8, 12);
+        let p = plan(Graphics::Auto, &hw);
+        assert!(!p.args.contains(&"-FrameGenX".to_owned()));
+        assert!(p.unset.iter().any(|k| k == "VICTORY_MFG_UNLOCKER_DLL"));
+        hw.mfg_unlocker = Some("C:/x/MFGUnlocker.dll".into());
+        let p = plan(Graphics::Auto, &hw);
+        assert!(p.args.windows(2).any(|w| w == ["-FrameGenX", "4"]));
+        assert!(p.set.iter().any(|(k, v)| k == "VICTORY_MFG_UNLOCKER_DLL" && v.ends_with("MFGUnlocker.dll")));
     }
 
     #[test]
