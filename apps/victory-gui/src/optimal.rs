@@ -120,6 +120,23 @@ pub struct Plan {
 /// The switches [`plan`] manages in the settings file.
 pub const RAY_TRACING: &str = "VICTORY_BVH_BUILDER";
 
+/// Choices the game's F1 menu saves into the same file, which the launcher
+/// puts over its options at every start: taken out at each launch from the
+/// app, so that the graphics quality chosen here is the one that runs (a run
+/// on 2026-11-28 12:15 had F1's Series X and 5x frame generation over the
+/// app's Series S and 2x, and FSR 3, which does 2x at most, stayed off). A
+/// change in F1 still holds until the next launch from the app.
+pub const MENU_CHOICES: [&str; 8] = [
+    "VICTORY_MENU_CONSOLE",
+    "VICTORY_MENU_RES",
+    "VICTORY_MENU_S_RES",
+    "VICTORY_MENU_DLSS",
+    "VICTORY_MENU_FRAMEGEN",
+    "VICTORY_MENU_FG_TYPE",
+    "VICTORY_MENU_FPS",
+    "VICTORY_MFG_UNLOCKER",
+];
+
 /// The title's memory in place, on trial: its windows outside buffers are
 /// buffers placed over the title's own memory (`VICTORY_INPLACE=1`: not 2,
 /// which the layer's late wait rules out), that memory a driver heap the
@@ -198,7 +215,7 @@ pub fn plan(asked: Graphics, hw: &Hardware) -> Plan {
     args.push("-PreloadShaders".into());
     args.push("-FrameGen".into());
     let mut set: Vec<(String, String)> = HYDRA_SET.iter().chain(IN_PLACE.iter()).map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect();
-    let mut unset = Vec::new();
+    let mut unset: Vec<String> = MENU_CHOICES.iter().map(|k| (*k).to_owned()).collect();
     if hw.threads > 0 && hw.threads <= 12 {
         set.extend(crate::settings::SIX_CORES.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())));
     } else {
@@ -250,6 +267,13 @@ mod tests {
         assert!(p.set.iter().any(|(k, v)| k == "VICTORY_THIN_THREADS" && v == "4"));
         assert!(p.set.iter().any(|(k, v)| k == "VICTORY_CARD_BUFFERS_MB" && v == "1536"));
         assert!(p.set.iter().any(|(k, v)| k == "VICTORY_INPLACE" && v == "1"), "never 2: late wait rules it out");
+        // F1's saved console and frame generation do not override the app's.
+        let file = apply("VICTORY_MENU_CONSOLE=series-x
+VICTORY_MENU_FRAMEGEN=5
+VICTORY_AMBIENT_SPECULAR=
+", &p);
+        assert!(!file.contains("VICTORY_MENU_CONSOLE") && !file.contains("VICTORY_MENU_FRAMEGEN"));
+        assert!(file.contains("VICTORY_AMBIENT_SPECULAR="), "other F1 choices stay");
         // Each switch once.
         let mut names: Vec<&String> = p.set.iter().map(|(k, _)| k).collect();
         names.sort();
