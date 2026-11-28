@@ -151,6 +151,15 @@ pub const MENU_CHOICES: [&str; 8] = [
 /// 12:45) fell to 6.0 fps from 9-12, the submitting thread up to 48.7 ms, and
 /// FSR 3 frame generation stayed off (it needs the line of submissions late
 /// wait runs).
+///
+/// Off at every start now (unset): level 1 never gained a frame. In world
+/// frames of 3,000-6,000 draws on the RTX 3060 the runs without it made 11.2
+/// and 14.0 fps (10:30, 11:24) with the card's part 12.9 and 3.3 ms; the runs
+/// with it 11.1 and 10.6 fps (12:23, 14:05) with 45 ms, and the submissions
+/// waited for flights 1.7-4.9 times a frame for title memory read, 0 without
+/// it (48-87 ms a frame waiting for the card, 10-21 without). The layer now
+/// counts which of its reads waits (UMA_DIRECT's reads in place, a copy at its
+/// place, a copy of ours on the card) for a later trial.
 pub const IN_PLACE: [(&str, &str); 3] = [("VICTORY_INPLACE", "1"), ("VICTORY_UMA_DRIVER", "1"), ("VICTORY_UMA_DIRECT", "1")];
 
 /// The layer's own switches that ToLIManl/VIctory-Hydra's launcher
@@ -219,8 +228,9 @@ pub fn plan(asked: Graphics, hw: &Hardware) -> Plan {
     args.extend(["-Dlss".into(), dlss.into()]);
     args.push("-PreloadShaders".into());
     args.push("-FrameGen".into());
-    let mut set: Vec<(String, String)> = HYDRA_SET.iter().chain(IN_PLACE.iter()).map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect();
+    let mut set: Vec<(String, String)> = HYDRA_SET.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect();
     let mut unset: Vec<String> = MENU_CHOICES.iter().map(|k| (*k).to_owned()).collect();
+    unset.extend(IN_PLACE.iter().map(|(k, _)| (*k).to_owned()));
     if hw.threads > 0 && hw.threads <= 12 {
         set.extend(crate::settings::SIX_CORES.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())));
     } else {
@@ -288,7 +298,8 @@ mod tests {
         // Level 1 with late wait on (level 2 needs it off, which cost a third of
         // the frame rate and frame generation).
         let get = |k: &str| p.set.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
-        assert_eq!(get("VICTORY_INPLACE"), Some("1"));
+        assert_eq!(get("VICTORY_INPLACE"), None);
+        assert!(p.unset.iter().any(|k| k == "VICTORY_INPLACE") && p.unset.iter().any(|k| k == "VICTORY_UMA_DIRECT"));
         assert_eq!(get("VICTORY_LATE_WAIT"), None);
         // F1's old console and frame generation, and a switch left from an
         // earlier start, do not survive; the F1 menu's own lines do.

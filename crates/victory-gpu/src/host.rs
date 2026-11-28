@@ -3352,7 +3352,7 @@ const WHY_FENCE: usize = 10;
 /// bottom-of-pipe write; fence signals set behind flights.
 /// Then: the settles for title memory read, by what read it (a buffer
 /// copy, a fill of upload memory, a texture).
-static LATE_STATS: [std::sync::atomic::AtomicU64; 18] = [const { std::sync::atomic::AtomicU64::new(0) }; 18];
+static LATE_STATS: [std::sync::atomic::AtomicU64; 21] = [const { std::sync::atomic::AtomicU64::new(0) }; 21];
 
 /// Since the last frame-rate line: the microseconds settles waited for the
 /// card, by why they settled (the `WHY_` places).
@@ -3404,7 +3404,13 @@ fn late_blocked(runs: &[&HostList]) -> Option<usize> {
         }
         (line.written.clone(), card_steps::copies(&line))
     };
-    blocked_by(&written, runs, true).or_else(|| card_steps::copied_read(&copies, runs).then_some(WHY_READ))
+    blocked_by(&written, runs, true).or_else(|| {
+        let read = card_steps::copied_read(&copies, runs);
+        if read {
+            LATE_STATS[20].fetch_add(1, Ordering::Relaxed);
+        }
+        read.then_some(WHY_READ)
+    })
 }
 
 /// Whether a small fill of upload memory, or copy of a title buffer, goes on without waiting for
@@ -3589,6 +3595,9 @@ fn blocked_by(written: &[(usize, usize)], runs: &[&HostList], count: bool) -> Op
         // a refresh. Conservative on purpose: it may wait more than the copy
         // would have needed.
         if recording.direct.values().any(|&(_, from, to)| touches(written, from, to)) {
+            if count {
+                LATE_STATS[18].fetch_add(1, Ordering::Relaxed);
+            }
             return Some(WHY_READ);
         }
         for step in &recording.copies {
@@ -3655,7 +3664,11 @@ fn blocked_by(written: &[(usize, usize)], runs: &[&HostList], count: bool) -> Op
             }
         }
     }
-    (!placed.is_empty() && place::read_by(runs, placed)).then_some(WHY_READ)
+    let read = !placed.is_empty() && place::read_by(runs, placed);
+    if read && count {
+        LATE_STATS[19].fetch_add(1, Ordering::Relaxed);
+    }
+    read.then_some(WHY_READ)
 }
 
 /// With flights in the air, after the submission's write-watch asking:
@@ -4283,7 +4296,7 @@ fn late_line(frames: f64) {
         "submissions sent ahead per frame: {:.1} in {:.1} settles ({:.1} flights each time), {:.1} ms waiting for the card in them; \
          settled for: a synchronous submission or present {:.1}, the card had run them {:.1}, a wait for a memory value {:.1}, \
          title memory changed under shader writes {:.1}, title memory read {:.1} (by a buffer copy {:.1}, a fill of upload memory {:.1}, \
-         a texture {:.1}), a step of ours {:.1}, {} lists in the air {:.1}, \
+         a texture {:.1}, title memory shaders read in place (VICTORY_UMA_DIRECT) {:.1}, a copy at its place {:.1},          a copy of ours on the card {:.1}), a step of ours {:.1}, {} lists in the air {:.1}, \
          bottom-of-pipe writes (VICTORY_LATE_WAIT_WRITES=0) {:.1}, a blocking fence wait {:.1}; \
          {:.1} waits for memory values met by a flight's bottom-of-pipe write, {:.1} fence signals set behind flights",
         s[0],
@@ -4298,6 +4311,9 @@ fn late_line(frames: f64) {
         s[15],
         s[16],
         s[17],
+        s[18],
+        s[19],
+        s[20],
         s[WHY_RUN],
         late_most(),
         s[WHY_MOST],
