@@ -219,6 +219,11 @@ impl Table {
         Table { at: at as usize, base, sources, ..Table::default() }
     }
 
+    /// The host copies its pass reads (0: none).
+    pub(crate) fn sources(&self) -> &[u64] {
+        &self.sources
+    }
+
     /// The place in the scratch buffer of the record of `kind` at `offset`
     /// of the host copy `id`, once the pass has run: a job of it is added if
     /// there is none. `None` if the pass cannot read that copy or has no
@@ -268,6 +273,7 @@ pub(super) fn record(
     budget: u64,
     sources: [u64; SOURCES],
     jobs: u64,
+    wait: bool,
 ) {
     let after = transition(
         dst,
@@ -277,10 +283,13 @@ pub(super) fn record(
     // SAFETY: an open list; our root signature and pipeline; live buffers:
     // the sources and the table are read in the common state (promoted).
     unsafe {
-        l.ResourceBarrier(&[
-            uav_barrier(),
-            transition(dst, before, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-        ]);
+        // (Without `wait`: nothing stored since the list's last full wait.)
+        let to_uav = transition(dst, before, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        if wait {
+            l.ResourceBarrier(&[uav_barrier(), to_uav]);
+        } else {
+            l.ResourceBarrier(&[to_uav]);
+        }
         l.SetComputeRootSignature(&c.root);
         l.SetPipelineState(&c.pso);
         for (i, source) in sources.into_iter().enumerate() {

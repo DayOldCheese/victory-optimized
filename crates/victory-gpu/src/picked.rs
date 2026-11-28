@@ -139,7 +139,7 @@ fn ask(shader: Arc<crate::pipeline::Shader>) {
 /// Whether the code of `program` stores to a buffer through a descriptor
 /// that its tables do not name: loaded from the view heap, or from a table at
 /// an offset it computes (programs with the view heap among their parameters). Yes where that cannot be told.
-fn stores_picked(program: &victory_shader::NativeProgram) -> bool {
+pub(crate) fn stores_picked(program: &victory_shader::NativeProgram) -> bool {
     use victory_shader::HwStage;
     use victory_shader::gfx10::Fields;
     use victory_shader::native::RootType;

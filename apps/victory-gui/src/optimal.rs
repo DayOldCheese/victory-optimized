@@ -271,6 +271,13 @@ pub fn plan(asked: Graphics, hw: &Hardware) -> Plan {
     // declared range read whole by the card's compare once in 60 submissions,
     // its pieces found changed lately between.
     set.push(("VICTORY_CARD_COMPARE_EVERY".into(), "60".into()));
+    // A draw whose programs can store ends the batch of indirect argument
+    // clamps only if it may have written the batch's argument records (a copy
+    // its pass reads declared written in the list, or stores by raw address or
+    // through views picked from the heap). Every new batch is a clamp pass with
+    // a full wait on the card; about 6,000 indirect executions a world frame,
+    // the card 100% busy at 16-20 us a pipeline change (run 2026-11-28 17:12).
+    set.push(("VICTORY_INDIRECT_KEEP".into(), "1".into()));
     // Two translator changes on trial (one preload for both): mesh programs
     // declare no more vertices and primitives than they have lanes (slots
     // past the lanes are never written, yet each is culled and reserved in
@@ -297,6 +304,12 @@ pub fn plan(asked: Graphics, hw: &Hardware) -> Plan {
         ("VICTORY_LOD_SCALE", "0.25"),
         ("VICTORY_SMALL_CULL", "3.5"),
         ("VICTORY_VEHICLE_LOD_BIAS", "1.5"),
+        // VIctory-Hydra's variable-rate shading at its Max-FPS value: main
+        // colour passes (640x360 and up) shaded 2x2, a quarter of the pixel
+        // programs' work; shadows, depth-only and small passes stay 1x1. Mesh
+        // and vertex draws with their pixel programs held the card about 50
+        // ms a world frame (run 2026-11-28 17:12).
+        ("VICTORY_VRS", "2x2"),
     ];
     if graphics == Graphics::Performance {
         set.extend(engine.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())));

@@ -102,6 +102,11 @@ pub mod timeline;
 pub mod titlewrite;
 #[cfg(windows)]
 pub mod uma_driver;
+/// Variable-rate shading of the title's main colour passes (`VICTORY_VRS`),
+/// from ToLIManl/VIctory-Hydra (GPL-3.0-or-later, at 85e7e07d).
+#[cfg(windows)]
+#[allow(dead_code)]
+pub(crate) mod vrs;
 #[cfg(windows)]
 mod upload;
 #[cfg(windows)]

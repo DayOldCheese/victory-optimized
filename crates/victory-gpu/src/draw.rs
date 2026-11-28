@@ -461,6 +461,28 @@ fn batches() -> u8 {
     })
 }
 
+/// Batched clamps per frame line (`VICTORY_INDIRECT_BATCH`): records placed in
+/// an open batch, batches opened, and what closed the batch before each new
+/// one: a draw whose programs can store, a copy into a buffer, dispatches
+/// before a draw (mode 2), a full table or one source too many, another list
+/// or none open. Each new batch is a clamp pass with a full wait and two
+/// state changes on the card; about 6,000 indirect executions a world frame
+/// (run 2026-11-28 17:12).
+pub(crate) static BATCHES: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
+/// Draws that store, after which the batch was kept (`VICTORY_INDIRECT_KEEP`).
+pub(crate) static BATCHES_KEPT: AtomicU64 = AtomicU64::new(0);
+
+/// `VICTORY_INDIRECT_KEEP=1`: see [`State::drew`].
+fn indirect_keep() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_INDIRECT_KEEP").is_some_and(|v| v == "1"))
+}
+const CLOSED_DREW: usize = 2;
+const CLOSED_COPIED: usize = 3;
+const CLOSED_WROTE: usize = 4;
+const CLOSED_FULL: usize = 5;
+const CLOSED_OTHER: usize = 6;
+
 /// The records clamped by the pass opened last ([`batches`]).
 struct Batch {
     table: crate::indirect::batch::Table,
@@ -538,6 +560,11 @@ pub(crate) struct State {
     /// could have stored to memory: only draws and dispatches whose shaders
     /// store nothing (`sync_needed`). False at the start of a list.
     quiet: bool,
+    /// The shading rate state last set on the host list (`crate::vrs`).
+    vrs_key: u64,
+    /// What closed the last batch ([`BATCHES`]; 0 when not known: another
+    /// list, or none was open).
+    batch_closed: usize,
     /// What the host list has: pipeline, root signature, heaps.
     host_pipeline: usize,
     /// Graphics, compute.
@@ -1852,6 +1879,12 @@ impl State {
         if !self.bind(list, p, false) {
             return false;
         }
+        // VIctory-Hydra's variable-rate shading of main colour passes (`VICTORY_VRS`).
+        let (vp_w, vp_h) = self
+            .viewports
+            .first()
+            .map_or((0, 0), |v| (v.Width.max(0.0) as u32, v.Height.max(0.0) as u32));
+        crate::vrs::apply_for_draw(list, self.targets.len(), vp_w, vp_h, &mut self.vrs_key);
         let l = &list.list;
         // Vertex buffers the input layout reads.
         let mut views = [D3D12_VERTEX_BUFFER_VIEW::default(); 32];
@@ -4439,7 +4472,10 @@ impl State {
                     // SAFETY: as above.
                     unsafe { l6.DispatchMesh(x.min(65_535), 1, 1) };
                     list.profile_draw(0);
-                    self.drew(crate::pipeline::host_pipeline(self.pipeline as This));
+                    if crate::host::card_profile::on() {
+                        crate::host::card_profile::dispatched(self.host_pipeline as u64, u64::from(x.min(65_535)));
+                    }
+                    self.drew(list, crate::pipeline::host_pipeline(self.pipeline as This));
                     self.mesh_scissor(list, false);
                     DRAWN.fetch_add(1, Ordering::Relaxed);
                     true
@@ -4928,7 +4964,7 @@ impl State {
             if frontend.is_some() {
                 viewports(list, &self.viewports);
             }
-            self.drew(crate::pipeline::host_pipeline(self.pipeline as This));
+            self.drew(list, crate::pipeline::host_pipeline(self.pipeline as This));
             DRAWN.fetch_add(1, Ordering::Relaxed);
         }
         if !ran {
@@ -5114,7 +5150,7 @@ impl State {
                     .DrawIndexedInstanced(indices, instances, first, base, first_instance)
             };
             list.profile_draw(0);
-            self.drew(crate::pipeline::host_pipeline(self.pipeline as This));
+            self.drew(list, crate::pipeline::host_pipeline(self.pipeline as This));
             DRAWN.fetch_add(1, Ordering::Relaxed);
         }
         if !ran {
@@ -5137,16 +5173,49 @@ impl State {
 
     /// A draw with the pipeline `p` was recorded (as [`State::buffers_written`]
     /// if its shaders can store to buffers).
-    fn drew(&mut self, p: Option<&HostPipeline>) {
-        if p.is_none_or(|p| p.stages.iter().any(|stage| stage.translated().stores)) {
-            self.batch = None;
+    ///
+    /// With `VICTORY_INDIRECT_KEEP=1` a draw whose programs can store closes
+    /// the batch only if it may have written its argument records: if any
+    /// copy the batch's pass reads was declared written in this list, or the
+    /// programs can store through raw addresses or through views they pick
+    /// from the heap by index (whose targets are not declared). Every other
+    /// store of a draw goes through a view the list declared written. The
+    /// argument records are usually written by the title's culling passes in
+    /// lists before (about 6,000 indirect executions a world frame, each new
+    /// batch a clamp pass with a full wait: run 2026-11-28 17:12).
+    fn drew(&mut self, list: &HostList, p: Option<&HostPipeline>) {
+        let Some(p) = p else {
+            self.close_batch(CLOSED_DREW);
+            return;
+        };
+        if !p.stages.iter().any(|stage| stage.translated().stores) {
+            return;
+        }
+        let unknown = p.stages.iter().any(|stage| {
+            let t = stage.translated();
+            t.stores_by_address || t.stores_picked
+        });
+        let keep = indirect_keep()
+            && !unknown
+            && self.batch.as_ref().is_some_and(|b| !list.wrote_any_copy(b.table.sources()));
+        if keep {
+            BATCHES_KEPT.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.close_batch(CLOSED_DREW);
+        }
+    }
+
+    /// The open batch, if any, is closed for `why` (counted in [`BATCHES`]).
+    fn close_batch(&mut self, why: usize) {
+        if self.batch.take().is_some() {
+            self.batch_closed = why;
         }
     }
 
     /// A buffer was copied to: what was clamped of it ahead is clamped anew.
     pub(crate) fn copied(&mut self) {
         self.window = None;
-        self.batch = None;
+        self.close_batch(CLOSED_COPIED);
     }
 
     /// The title waits for earlier work (a barrier or a pipeline sync).
@@ -5178,7 +5247,7 @@ impl State {
 
     pub(crate) fn synced(&mut self) {
         if self.batch.as_ref().is_some_and(|b| b.wrote) {
-            self.batch = None;
+            self.close_batch(CLOSED_WROTE);
         }
     }
 
@@ -5209,12 +5278,21 @@ impl State {
         if let Some(b) = &mut self.batch
             && let Some(at) = b.table.place(id, offset, kind)
         {
+            BATCHES[0].fetch_add(1, Ordering::Relaxed);
             return Some((b.scratch.clone(), at, SLOT, false));
         }
-        self.batch = None;
+        if self.batch.take().is_some() {
+            self.batch_closed = CLOSED_FULL;
+        }
+        BATCHES[1].fetch_add(1, Ordering::Relaxed);
+        let why = std::mem::replace(&mut self.batch_closed, 0);
+        BATCHES[if why >= CLOSED_DREW { why } else { CLOSED_OTHER }].fetch_add(1, Ordering::Relaxed);
         // What is held back runs before the new batch's pass.
         unsettle_indirect(list);
-        let (mut table, scratch) = crate::indirect::open_batch(list, (id, &args.buffer), &argument_copies(args))?;
+        // The pass's full wait for earlier stores, unless nothing stored since
+        // the list's last one (`VICTORY_SYNC_QUIET`, as for the title's barriers).
+        let wait = self.sync_needed();
+        let (mut table, scratch) = crate::indirect::open_batch_waiting(list, (id, &args.buffer), &argument_copies(args), wait)?;
         self.host_pipeline = 0;
         self.host_roots[1] = 0;
         let at = table.place(id, offset, kind)?;
@@ -5511,7 +5589,7 @@ impl State {
         if kind == DISPATCH {
             self.buffers_written();
         } else {
-            self.drew(Some(p));
+            self.drew(list, Some(p));
         }
         // The stand-in for reflections after the program that gives rays
         // that found nothing the sky (`crate::ambient`, `Role::Miss`): the

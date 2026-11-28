@@ -2750,6 +2750,12 @@ struct Deferred {
     /// memory (host copy, address, bytes): declaring them again would
     /// change nothing.
     gpu_written: std::collections::HashSet<(usize, usize, usize), std::hash::BuildHasherDefault<AddressHash>>,
+    /// Every host copy (`Shadow::id`) a draw or dispatch of the list was
+    /// declared to write, until the list is reset (not cleared with
+    /// `gpu_written`, which only spares declaring a range twice): whether a
+    /// draw that stores may have written a batch's argument records
+    /// (`crate::draw`, `VICTORY_INDIRECT_KEEP`).
+    written_copies: std::collections::HashSet<u64>,
     /// Scratch memory [`HostList::fill_scratch`] fills since the list last
     /// wrote title memory (source, bytes): its host address.
     filled: std::collections::HashMap<(usize, usize), u64, std::hash::BuildHasherDefault<AddressHash>>,
@@ -8032,6 +8038,13 @@ impl HostList {
     /// Declared once until the list next writes title memory (but with
     /// `VICTORY_DECLARE_ONCE=0`): the dispatches of a frame declared the
     /// same ranges thousands of times, each a step of its own.
+    /// Whether a draw or dispatch of this list was declared to write any of
+    /// the host copies `ids` (0: none).
+    pub(crate) fn wrote_any_copy(&self, ids: &[u64]) -> bool {
+        let deferred = self.deferred();
+        ids.iter().any(|id| *id != 0 && deferred.written_copies.contains(id))
+    }
+
     pub(crate) fn defer_gpu_write(
         &self,
         shadow: &std::sync::Arc<crate::shadow::Shadow>,
@@ -8040,6 +8053,7 @@ impl HostList {
     ) {
         let mut deferred = self.deferred();
         deferred.unforward(address, len);
+        deferred.written_copies.insert(shadow.id());
         let key = (std::sync::Arc::as_ptr(shadow) as usize, address, len);
         if deferred.gpu_written.insert(key) || !declare_once() {
             deferred.copies.push(Step::GpuWrite(shadow.clone(), address, len));
@@ -10193,6 +10207,18 @@ impl Meter {
                     lean::lean_line(frames);
                 }
                 let [kept, left] = [0, 1].map(|i| crate::list::SYNCS[i].swap(0, Ordering::Relaxed) as f64 / frames);
+                let c: Vec<f64> = crate::draw::BATCHES.iter().map(|n| n.swap(0, Ordering::Relaxed) as f64 / frames).collect();
+                tracing::info!(
+                    "indirect clamps per frame (VICTORY_INDIRECT_BATCH): {:.0} records placed in an open batch, {:.0} batches opened                      (each a clamp pass with a full wait); what closed the one before: a draw whose programs can store {:.0}, a copy                      into a buffer {:.0}, dispatches before a draw {:.0}, a full table or one source too many {:.0}, another list or                      none open {:.0}; draws that store after which the batch was kept (VICTORY_INDIRECT_KEEP) {:.0}",
+                    c[0],
+                    c[1],
+                    c[2],
+                    c[3],
+                    c[4],
+                    c[5],
+                    c[6],
+                    crate::draw::BATCHES_KEPT.swap(0, Ordering::Relaxed) as f64 / frames
+                );
                 let b: Vec<f64> = crate::list::BARRIERS.iter().map(|n| n.swap(0, Ordering::Relaxed) as f64 / frames).collect();
                 tracing::info!(
                     "barriers per frame: the title's enhanced barrier calls {:.0} ({:.0} ordering nothing, {:.0} the global UAV barrier,                      {:.0} UAV barriers on their textures), its legacy barrier calls {:.0}; texture state changes the layer records in                      its lists {:.0}",

@@ -144,6 +144,10 @@ pub(crate) struct Translated {
     /// stores ([`stores`]) or image stores and atomics ([`stores_images`]).
     /// What `crate::draw::State`'s pipeline-sync rule goes by.
     pub(crate) writes: bool,
+    /// Whether it can store to buffers through descriptors its tables do not
+    /// name (`crate::picked::stores_picked`, known at translation): those
+    /// writes are declared nowhere.
+    pub(crate) stores_picked: bool,
     /// Whether it stores through a view it picks from the heap by an index,
     /// once asked (`crate::picked`).
     pub(crate) picks: std::sync::atomic::AtomicU8,
@@ -225,6 +229,7 @@ fn translate(container: &[u8]) -> Result<Translated, String> {
     });
     let stores_by_address = programs.is_empty() || programs.iter().any(stores_by_address);
     let writes = stores || programs.iter().any(stores_images);
+    let stores_picked = programs.is_empty() || programs.iter().any(crate::picked::stores_picked);
     let facts = programs
         .iter()
         .map(|p| {
@@ -261,6 +266,7 @@ fn translate(container: &[u8]) -> Result<Translated, String> {
         stores,
         stores_by_address,
         writes,
+        stores_picked,
         picks: Default::default(),
     })
 }
