@@ -155,7 +155,15 @@ pub const MENU_CHOICES: [&str; 8] = [
 /// write watch in a world frame on an RTX 3060 with a Ryzen 5 5600X (run
 /// 2026-11-28 11:31). The layer self-tests the driver heap before the
 /// title's first code and turns it off for the run if that fails.
-pub const IN_PLACE: [(&str, &str); 3] = [("VICTORY_INPLACE", "1"), ("VICTORY_UMA_DRIVER", "1"), ("VICTORY_UMA_DIRECT", "1")];
+///
+/// On trial now at level 2: the title's buffers too (their refreshes were
+/// still 19-20 ms of the submitting thread's 80, and their card copies the
+/// 99 hash and 359 compare passes a frame on the card, run 2026-11-28 12:29),
+/// which the layer allows only with late wait off (`VICTORY_LATE_WAIT=0`:
+/// every submission waited for, where the relay would let them run ahead).
+/// Whether that costs more than it saves is what the run is for.
+pub const IN_PLACE: [(&str, &str); 4] =
+    [("VICTORY_INPLACE", "2"), ("VICTORY_LATE_WAIT", "0"), ("VICTORY_UMA_DRIVER", "1"), ("VICTORY_UMA_DIRECT", "1")];
 
 /// The layer's own switches that ToLIManl/VIctory-Hydra's launcher
 /// (`Play-VIctory.cmd`, GPL-3.0-or-later) turns on and Mandy's base launcher
@@ -284,7 +292,9 @@ mod tests {
         assert!(!p.args.contains(&"-NoFrameGenReady".to_owned()));
         assert!(p.set.iter().any(|(k, v)| k == "VICTORY_THIN_THREADS" && v == "4"));
         assert!(p.set.iter().any(|(k, v)| k == "VICTORY_CARD_BUFFERS_MB" && v == "1536"));
-        assert!(p.set.iter().any(|(k, v)| k == "VICTORY_INPLACE" && v == "1"), "never 2: late wait rules it out");
+        // Level 2 only with late wait off (the layer's rule: inplace.rs).
+        let get = |k: &str| p.set.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+        assert!(get("VICTORY_INPLACE") != Some("2") || get("VICTORY_LATE_WAIT") == Some("0"));
         // F1's saved console and frame generation do not override the app's.
         let file = apply("VICTORY_MENU_CONSOLE=series-x
 VICTORY_MENU_FRAMEGEN=5

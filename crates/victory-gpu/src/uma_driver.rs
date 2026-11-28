@@ -165,8 +165,9 @@ pub fn gate() -> Option<RwLockReadGuard<'static, ()>> {
 /// free stretches `free` (start, end) of the address space: every stretch
 /// the window fits in (1 GiB or more for a larger window) outside the hole,
 /// but its first 256 MiB, or less than half the window, room for other small
-/// mappings. A window under 1 GiB found a stretch between its size and 1 GiB
-/// unreserved, and the driver mapped its heap there (XCL f78e05bcc).
+/// mappings; in the stretch that holds the hole, all of it below the hole. A
+/// window under 1 GiB found a stretch between its size and 1 GiB unreserved,
+/// and the driver mapped its heap there (XCL f78e05bcc).
 pub(crate) fn plan(free: &[(usize, usize)], hole: usize, len: usize) -> Vec<(usize, usize)> {
     let len = len.next_multiple_of(K64);
     let (least, margin) = (len.min(1 << 30), (256usize << 20).min(len / 2) & !(K64 - 1));
@@ -177,7 +178,13 @@ pub(crate) fn plan(free: &[(usize, usize)], hole: usize, len: usize) -> Vec<(usi
             continue;
         }
         let s = base.next_multiple_of(K64) + margin;
-        for (s, e) in [(s, end.min(hole)), (s.max(hole + len), end)] {
+        // In the stretch that holds the hole, all of it below the hole: a
+        // margin there joins the hole, and the driver maps the window at the
+        // margin's start (a run on 2026-11-28: "Map gave 0x1d2d00000, not the
+        // memory's 0x1d2e00000", 563 MB with 1 MB free below it, and the same
+        // for 596 MB). The other stretches keep their margins.
+        let below = if base <= hole && hole < end { base.next_multiple_of(K64) } else { s };
+        for (s, e) in [(below, end.min(hole)), (s.max(hole + len), end)] {
             let mut s = s;
             while s < e {
                 let n = (e - s).min(1 << 40);
@@ -889,6 +896,10 @@ mod tests {
         let fits: Vec<_> = left(free, &plan).into_iter().filter(|&(s, e)| e - s >= len).collect();
         assert!(fits.iter().all(|&(s, e)| s <= hole && hole + len <= e), "free room for the window outside its hole: {fits:x?}");
         assert!(fits.iter().any(|&(s, e)| s <= hole && hole + len <= e), "the hole is free");
+        // The free room the hole is in starts at the hole: room below it
+        // would let the driver map the window lower.
+        let at = left(free, &plan).into_iter().find(|&(s, e)| s <= hole && hole < e).expect("the hole is free");
+        assert_eq!(at.0, hole, "free room below the hole: {at:x?}");
     }
 
     #[test]
@@ -903,8 +914,8 @@ mod tests {
         // A window over 1 GiB: a stretch of 1 GiB is the least reserved
         // (but for its margin).
         assert!(plan.iter().any(|&(s, _)| s == 0x1_0000_0000 + 256 * MB), "{plan:x?}");
-        // A margin at each stretch's start, also before the hole.
-        assert!(plan.iter().any(|&(s, n)| s == 0x12_0000_0000 + 256 * MB && s + n == hole));
+        // No margin before the hole, in the hole's own stretch.
+        assert!(plan.iter().any(|&(s, n)| s == 0x12_0000_0000 && s + n == hole));
         assert!(plan.iter().any(|&(s, _)| s == hole + len));
         // A stretch under 1 GiB cannot hold it: left alone.
         assert!(super::plan(&[(0x2000_0000, 0x2000_0000 + 768 * MB)], hole, len).is_empty());
@@ -935,11 +946,24 @@ mod tests {
         only_the_hole_fits(&free, hole, len);
         let plan = plan(&free, hole, len);
         assert_eq!(plan[0].0, 0x2_0001_0000 + 32 * MB);
-        // Below the hole: less than the margin, nothing reserved there.
-        assert!(plan.iter().all(|&(s, n)| s + n <= 0x2_1000_0000 || s >= hole + len));
+        // Below the hole, in its own stretch: reserved whole, not left as a margin.
+        assert!(plan.iter().any(|&(s, n)| s == hole - 32 * MB && s + n == hole), "{plan:x?}");
         // A size off 64 KiB: the hole is its 64 KiB pages.
         let plan = super::plan(&free, hole, len - 100);
         assert!(plan.iter().all(|&(s, n)| s + n <= hole || s >= hole + len));
+    }
+
+    /// The run of 2026-11-28: a 563 MB window with 1 MB free right below it.
+    /// The margin left that 1 MB free and the driver mapped the window there,
+    /// 1 MB low; the hole's own stretch is reserved below it whole now.
+    #[test]
+    fn a_small_gap_below_the_hole_is_reserved() {
+        let len = 563 * MB;
+        let hole = 0x1_d2e0_0000;
+        let free = [(hole - MB, hole + len), (0x3_0000_0000, 0x4_0000_0000)];
+        only_the_hole_fits(&free, hole, len);
+        let plan = plan(&free, hole, len);
+        assert!(plan.contains(&(hole - MB, MB)), "{plan:x?}");
     }
 
     /// Stretches over 1 TiB are reserved in pieces of 1 TiB; the top of the
