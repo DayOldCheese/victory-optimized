@@ -135,7 +135,12 @@ pub const HYDRA_SET: [(&str, &str); 21] = [
     ("VICTORY_JOIN_PARTS", "24"),
     ("VICTORY_JOIN_LISTS", "128"),
     ("VICTORY_CARD_BUFFERS_MB", "1536"),
-    ("VICTORY_CARD_WINDOWS_MB", "1024"),
+    // 256 MB here, not VIctory-Hydra's 1024: on an RTX 3060 12 GB with frame
+    // generation on (a fifth of the card held back) the 2.5 GB of buffers and
+    // windows left textures too little room in a long session: 197,000 "no
+    // room" by its end and 19 fps falling to 11 from the minute they began
+    // (run 2026-11-28 10:52). The buffers keep their 1.5 GB.
+    ("VICTORY_CARD_WINDOWS_MB", "256"),
     ("VICTORY_PORT_CONSTANTS", "1"),
     ("VICTORY_HEAP_SYNC_EARLY", "1"),
     ("VICTORY_LAND_SKIP", "1"),
