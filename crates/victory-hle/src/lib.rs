@@ -35,6 +35,10 @@ pub use victory_gpu::replay;
 
 #[cfg(windows)]
 pub use victory_gpu::pipeline::known as known_pipelines;
+/// Title memory in driver heaps (`VICTORY_UMA_DRIVER=1`): the launcher runs
+/// its self-test before the title's first code.
+#[cfg(windows)]
+pub use victory_gpu::uma_driver;
 
 use victory_loader::{ImportResolver, Provenance, Resolution};
 use victory_pe::ImportSymbol;
