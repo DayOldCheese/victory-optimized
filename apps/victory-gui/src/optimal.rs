@@ -155,7 +155,13 @@ pub const HYDRA_SET: [(&str, &str); 21] = [
     ("VICTORY_DSTORAGE_IO", "handles"),
     ("VICTORY_DSTORAGE_WORKERS", "3"),
     ("VICTORY_PIPELINE_LOWEST", "0"),
-    ("VICTORY_WINDOWS_BAR_MB", "0"),
+    // Not VIctory-Hydra's 0: up to 1 GB of the title's windows in card memory
+    // the CPU writes directly (a D3D12 GPU upload heap), so they need no copy
+    // and no list of changes (a captured frame 36 -> 32 ms, the card's lists 29
+    // -> 26 ms; shadow.rs). Only with Resizable BAR on in the BIOS (the layer
+    // asks D3D12 for GPU upload heaps and does without them otherwise), and
+    // only while the card is under four fifths of its budget.
+    ("VICTORY_WINDOWS_BAR_MB", "1024"),
 ];
 
 pub fn plan(asked: Graphics, hw: &Hardware) -> Plan {
