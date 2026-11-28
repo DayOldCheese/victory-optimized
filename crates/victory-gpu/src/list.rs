@@ -2260,33 +2260,348 @@ extern "system" fn wait_value64(this: This, address: u64, comparison: u32, refer
     wait_for(this, address, comparison, reference, true);
 }
 
-/// The enhanced barriers `(group count, groups)`: buffer, texture and
-/// global barriers with layouts instead of states. Every host use of a
-/// title texture (clears, copies) moves its host copy to the state it needs
-/// first, so only their ordering matters: one barrier on every shader
-/// write (the title's buffer barriers order compute passes).
-extern "system" fn barrier_groups(this: This, count: u32, _groups: *const u8) {
-    // Diagnostics: counted, and left out under `VICTORY_BARRIER_TEST=groups`.
+// The enhanced barriers of a list (`ID3D12GraphicsCommandList7::Barrier`,
+// slot 146): their `D3D12_BARRIER_GROUP`s read for what they order, where
+// each call used to become one global UAV barrier whatever it held.
+//
+// Ported from ToLIManl/VIctory-Hydra (GPL-3.0-or-later; layouts checked there
+// against the console's `d3d12_xs.h`): barriers that order nothing (a sync or
+// access of none, a split barrier's first half) are left out; texture
+// transitions between non-UAV layouts are left to the host's own state
+// changes of its copies (`ensure_state`), which order them; a texture's UAV
+// hazard is a UAV barrier on that texture's host copy (or twin), not on every
+// resource; a global barrier, a buffer barrier that may write, a group of an
+// unknown type or a null array stays the global UAV barrier. Measured there
+// (Stage 6.1) at about 3,964 global UAV barriers a frame fewer.
+// `VICTORY_ENHANCED_BARRIERS=0`: every call one global UAV barrier, as before.
+
+/// `D3D12_BARRIER_GROUP` (`d3d12_xs.h:25816`, 16 bytes on x64).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct BarrierGroup {
+    kind: u32,
+    count: u32,
+    barriers: *const u8,
+}
+const _: () = assert!(size_of::<BarrierGroup>() == 0x10);
+
+/// `D3D12_GLOBAL_BARRIER` (`d3d12_xs.h:25784`, 16 bytes on x64).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct GlobalBarrier {
+    sync_before: u32,
+    sync_after: u32,
+    access_before: u32,
+    access_after: u32,
+}
+const _: () = assert!(size_of::<GlobalBarrier>() == 0x10);
+
+/// `D3D12_TEXTURE_BARRIER` (`d3d12_xs.h:25792`, 64 bytes on x64).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct TextureBarrier {
+    sync_before: u32,
+    sync_after: u32,
+    access_before: u32,
+    access_after: u32,
+    layout_before: u32,
+    layout_after: u32,
+    resource: This,
+    subresources: [u32; 6],
+    flags: u32,
+}
+const _: () = assert!(size_of::<TextureBarrier>() == 0x40);
+const _: () = assert!(std::mem::offset_of!(TextureBarrier, resource) == 24);
+
+/// `D3D12_BUFFER_BARRIER` (`d3d12_xs.h:25805`, 40 bytes on x64).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct BufferBarrier {
+    sync_before: u32,
+    sync_after: u32,
+    access_before: u32,
+    access_after: u32,
+    resource: This,
+    offset: u64,
+    size: u64,
+}
+const _: () = assert!(size_of::<BufferBarrier>() == 0x28);
+const _: () = assert!(std::mem::offset_of!(BufferBarrier, resource) == 16);
+
+const BARRIER_TYPE_GLOBAL: u32 = 0;
+const BARRIER_TYPE_TEXTURE: u32 = 1;
+const BARRIER_TYPE_BUFFER: u32 = 2;
+
+const BARRIER_SYNC_NONE: u32 = 0x0;
+const BARRIER_SYNC_SPLIT: u32 = 0x8000_0000;
+
+const BARRIER_ACCESS_COMMON: u32 = 0x0;
+const BARRIER_ACCESS_UNORDERED_ACCESS: u32 = 0x10;
+const BARRIER_ACCESS_NO_ACCESS: u32 = 0x8000_0000;
+/// Write-capable `D3D12_BARRIER_ACCESS` bits (`d3d12_xs.h:25729-25757`).
+const BARRIER_ACCESS_WRITE_MASK: u32 =
+    0x8 | 0x10 | 0x20 | 0x100 | 0x400 | 0x1000 | 0x8000 | 0x4_0000 | 0x10_0000 | 0x40_0000;
+
+#[inline]
+fn access_may_write(access: u32) -> bool {
+    access == BARRIER_ACCESS_COMMON
+        || (access != BARRIER_ACCESS_NO_ACCESS && (access & BARRIER_ACCESS_WRITE_MASK) != 0)
+}
+
+#[inline]
+fn enhanced_needs_order(sync_before: u32, sync_after: u32, access_before: u32, access_after: u32) -> bool {
+    if sync_before == BARRIER_SYNC_NONE
+        || sync_after == BARRIER_SYNC_NONE
+        || sync_after == BARRIER_SYNC_SPLIT
+        || access_before == BARRIER_ACCESS_NO_ACCESS
+        || access_after == BARRIER_ACCESS_NO_ACCESS
+    {
+        return false;
+    }
+    access_may_write(access_before) || access_may_write(access_after)
+}
+
+/// Write-capable `D3D12_BARRIER_ACCESS` bits relevant to host GPU buffers
+/// (`UNORDERED_ACCESS | STREAM_OUTPUT | COPY_DEST`); excludes texture-only
+/// write bits and disabled RT acceleration-structure build writes (`0x8000`).
+const BARRIER_ACCESS_BUFFER_WRITE_MASK: u32 = 0x10 | 0x100 | 0x400;
+
+#[inline]
+fn buffer_access_may_write(access: u32) -> bool {
+    access == BARRIER_ACCESS_COMMON
+        || (access != BARRIER_ACCESS_NO_ACCESS
+            && (access & BARRIER_ACCESS_BUFFER_WRITE_MASK) != 0)
+}
+
+#[inline]
+fn enhanced_buffer_needs_order(
+    sync_before: u32,
+    sync_after: u32,
+    access_before: u32,
+    access_after: u32,
+) -> bool {
+    if sync_before == BARRIER_SYNC_NONE
+        || sync_after == BARRIER_SYNC_NONE
+        || sync_after == BARRIER_SYNC_SPLIT
+        || access_before == BARRIER_ACCESS_NO_ACCESS
+        || access_after == BARRIER_ACCESS_NO_ACCESS
+    {
+        return false;
+    }
+    buffer_access_may_write(access_before) || buffer_access_may_write(access_after)
+}
+
+/// Whether `ID3D12GraphicsCommandList7::Barrier` parses `D3D12_BARRIER_GROUP`
+/// payloads and filters/scopes barriers instead of always emitting a global
+/// `UAV_BARRIER(NULL)` (`VICTORY_ENHANCED_BARRIERS=0` reverts to legacy).
+fn enhanced_barriers_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_ENHANCED_BARRIERS").is_none_or(|v| v != "0"))
+}
+
+/// Stack-only summary of one `ID3D12GraphicsCommandList7::Barrier` call.
+///
+/// Built synchronously at the title's call site (so `thin` recording never
+/// retains pointers into the caller's stack) and executed on the host list.
+pub(super) struct EnhancedAction {
+    pub(super) global_uav: bool,
+    pub(super) scoped_len: usize,
+    pub(super) scoped_textures: [This; 16],
+    pub(super) stats: [u32; 3],
+}
+
+impl EnhancedAction {
+    pub(super) const fn empty() -> Self {
+        Self {
+            global_uav: false,
+            scoped_len: 0,
+            scoped_textures: [std::ptr::null(); 16],
+            stats: [0; 3],
+        }
+    }
+
+    #[inline]
+    pub(super) fn is_noop(&self) -> bool {
+        !self.global_uav && self.scoped_len == 0
+    }
+}
+
+pub(super) fn classify_barrier_groups(count: u32, groups: *const u8) -> EnhancedAction {
+    let mut action = EnhancedAction::empty();
+    if count == 0 {
+        return action;
+    }
+    if !enhanced_barriers_on() || groups.is_null() {
+        action.global_uav = true;
+        return action;
+    }
+    // SAFETY: the title passes `count` valid `D3D12_BARRIER_GROUP` records.
+    let slice = unsafe { std::slice::from_raw_parts(groups.cast::<BarrierGroup>(), count as usize) };
+    for g in slice {
+        if g.count == 0 {
+            continue;
+        }
+        if g.barriers.is_null() {
+            action.global_uav = true;
+            continue;
+        }
+        match g.kind {
+            BARRIER_TYPE_GLOBAL => {
+                action.stats[0] = action.stats[0].saturating_add(g.count);
+                // SAFETY: `g.count` valid `D3D12_GLOBAL_BARRIER` items.
+                let items = unsafe {
+                    std::slice::from_raw_parts(g.barriers.cast::<GlobalBarrier>(), g.count as usize)
+                };
+                if items.iter().any(|b| {
+                    enhanced_needs_order(b.sync_before, b.sync_after, b.access_before, b.access_after)
+                }) {
+                    action.global_uav = true;
+                }
+            }
+            BARRIER_TYPE_TEXTURE => {
+                action.stats[1] = action.stats[1].saturating_add(g.count);
+                // SAFETY: `g.count` valid `D3D12_TEXTURE_BARRIER` items.
+                let items = unsafe {
+                    std::slice::from_raw_parts(g.barriers.cast::<TextureBarrier>(), g.count as usize)
+                };
+                for b in items {
+                    if !enhanced_needs_order(
+                        b.sync_before,
+                        b.sync_after,
+                        b.access_before,
+                        b.access_after,
+                    ) {
+                        continue;
+                    }
+                    // Non-UAV texture transitions (RT/DSV/Copy -> SRV, etc.) are
+                    // already ordered by host per-resource state transitions
+                    // (`ensure_state` / `ensure_copy_state`). Only UAV/COMMON
+                    // texture hazards need an explicit UAV barrier, scoped to
+                    // the texture itself rather than stalling the entire GPU.
+                    let uav_involved = b.access_before == BARRIER_ACCESS_COMMON
+                        || b.access_after == BARRIER_ACCESS_COMMON
+                        || (b.access_before & BARRIER_ACCESS_UNORDERED_ACCESS) != 0
+                        || (b.access_after & BARRIER_ACCESS_UNORDERED_ACCESS) != 0;
+                    if !uav_involved {
+                        continue;
+                    }
+                    if b.resource.is_null() {
+                        action.global_uav = true;
+                    } else if !action.global_uav
+                        && !action.scoped_textures[..action.scoped_len].contains(&b.resource)
+                    {
+                        if action.scoped_len < action.scoped_textures.len() {
+                            action.scoped_textures[action.scoped_len] = b.resource;
+                            action.scoped_len += 1;
+                        } else {
+                            action.global_uav = true;
+                        }
+                    }
+                }
+            }
+            BARRIER_TYPE_BUFFER => {
+                action.stats[2] = action.stats[2].saturating_add(g.count);
+                // SAFETY: `g.count` valid `D3D12_BUFFER_BARRIER` items.
+                let items = unsafe {
+                    std::slice::from_raw_parts(g.barriers.cast::<BufferBarrier>(), g.count as usize)
+                };
+                if items.iter().any(|b| {
+                    enhanced_buffer_needs_order(
+                        b.sync_before,
+                        b.sync_after,
+                        b.access_before,
+                        b.access_after,
+                    )
+                }) {
+                    action.global_uav = true;
+                }
+            }
+            _ => {
+                action.global_uav = true;
+            }
+        }
+    }
+    action
+}
+
+
+pub(super) fn apply_enhanced_action(this: This, action: &EnhancedAction) {
     #[cfg(all(windows, feature = "diagnostics"))]
-    if count > 0 {
-        crate::copystat::add(crate::copystat::C::WaitsForGroups, 1);
+    {
         if crate::copystat::barrier_test() & 1 != 0 {
+            if !action.is_noop() {
+                crate::copystat::add(crate::copystat::C::WaitsForGroups, 1);
+            }
             return;
         }
     }
     #[cfg(windows)]
-    if count > 0
-        && let Some(list) = host_list(this)
-    {
+    if let Some(list) = host_list(this) {
         use windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_BARRIER;
-        with_state(this, |_, state| state.synced());
-        // SAFETY: the same layout; no resource named.
-        let barrier = unsafe { std::mem::transmute::<Barrier, D3D12_RESOURCE_BARRIER>(UAV_BARRIER) };
-        // SAFETY: an open list.
-        unsafe { list.list.ResourceBarrier(&[barrier]) };
+        use windows::core::Interface;
+        if action.global_uav {
+            #[cfg(feature = "diagnostics")]
+            crate::copystat::add(crate::copystat::C::WaitsForGroups, 1);
+            with_state(this, |_, state| state.synced());
+            // SAFETY: the same layout; no resource named.
+            let barrier = unsafe { std::mem::transmute::<Barrier, D3D12_RESOURCE_BARRIER>(UAV_BARRIER) };
+            // SAFETY: an open list.
+            unsafe { list.list.ResourceBarrier(&[barrier]) };
+            return;
+        }
+        if action.scoped_len > 0 {
+            const ALLOW_UAV: u32 = 0x4;
+            let mut host_barriers = [UAV_BARRIER; 16];
+            let mut n = 0usize;
+            for &guest in &action.scoped_textures[..action.scoped_len] {
+                let raw: Option<This> = if let Some(twin) = crate::resource::twin_resource(guest) {
+                    Some(twin.as_raw().cast_const().cast())
+                } else {
+                    let copy = crate::resource::host_copy(guest).or_else(|| {
+                        crate::resource::alias_of(guest).and_then(|held| crate::resource::host_copy(held.get()))
+                    });
+                    copy.and_then(|c| {
+                        (c.flags() & ALLOW_UAV != 0).then(|| c.texture.as_raw().cast_const().cast())
+                    })
+                };
+                if let Some(ptr) = raw {
+                    host_barriers[n] = Barrier {
+                        kind: 2,
+                        flags: 0,
+                        first: ptr,
+                        second: 0,
+                        last: 0,
+                    };
+                    n += 1;
+                }
+            }
+            if n > 0 {
+                with_state(this, |_, state| state.synced());
+                // SAFETY: same layout as `D3D12_RESOURCE_BARRIER`; borrowed live pointers.
+                let slice = unsafe {
+                    std::slice::from_raw_parts(
+                        host_barriers.as_ptr().cast::<D3D12_RESOURCE_BARRIER>(),
+                        n,
+                    )
+                };
+                // SAFETY: an open list and live host textures with `ALLOW_UNORDERED_ACCESS`.
+                unsafe { list.list.ResourceBarrier(slice) };
+            }
+        }
     }
     #[cfg(not(windows))]
-    let _ = (this, count);
+    let _ = (this, action);
+}
+
+extern "system" fn barrier_groups(this: This, count: u32, groups: *const u8) {
+    if count == 0 {
+        return;
+    }
+    // Diagnostics: left out under `VICTORY_BARRIER_TEST=groups` (in the action).
+    let action = classify_barrier_groups(count, groups);
+    if !action.is_noop() {
+        apply_enhanced_action(this, &action);
+    }
 }
 
 /// The bottom-of-pipe value writes `(address, value, flush, flags)`, 32 and
@@ -2509,6 +2824,54 @@ static NEWER_THIN_FUNCTIONS: Table<160> = Table(thin::table(true));
 mod tests {
     use super::*;
     use crate::object::slot;
+
+    /// What a barrier call becomes: nothing for what orders nothing or for a
+    /// texture's change between non-UAV layouts; a UAV barrier on the
+    /// texture for a texture's UAV hazard; the global UAV barrier for a
+    /// global barrier that orders writes, a buffer that may be written, a
+    /// texture with no resource or an unknown group.
+    #[test]
+    fn barrier_groups_become_only_the_barriers_they_need() {
+        const ALL: u32 = 0x1; // D3D12_BARRIER_SYNC_ALL
+        const RT: u32 = 0x4; // RENDER_TARGET access
+        const SRV: u32 = 0x8000; // SHADER_RESOURCE access
+        const UAV: u32 = BARRIER_ACCESS_UNORDERED_ACCESS;
+        let group = |kind: u32, count: u32, barriers: *const u8| BarrierGroup { kind, count, barriers };
+        let classify = |groups: &[BarrierGroup]| classify_barrier_groups(groups.len() as u32, groups.as_ptr().cast());
+        let texture = |before: u32, after: u32, resource: This| TextureBarrier {
+            sync_before: ALL,
+            sync_after: ALL,
+            access_before: before,
+            access_after: after,
+            layout_before: 0,
+            layout_after: 0,
+            resource,
+            subresources: [0; 6],
+            flags: 0,
+        };
+        // A render target read as a texture: the host's own state change orders it.
+        let rt = [texture(RT, SRV, 0x1000 as This)];
+        assert!(classify(&[group(BARRIER_TYPE_TEXTURE, 1, rt.as_ptr().cast())]).is_noop());
+        // A barrier with no sync orders nothing.
+        let none = [GlobalBarrier { sync_before: BARRIER_SYNC_NONE, sync_after: ALL, access_before: UAV, access_after: UAV }];
+        assert!(classify(&[group(BARRIER_TYPE_GLOBAL, 1, none.as_ptr().cast())]).is_noop());
+        // A texture written as UAV and read after: a barrier on that texture alone.
+        let uav = [texture(UAV, SRV, 0x2000 as This), texture(UAV, UAV, 0x2000 as This)];
+        let a = classify(&[group(BARRIER_TYPE_TEXTURE, 2, uav.as_ptr().cast())]);
+        assert!(!a.global_uav && a.scoped_len == 1 && a.scoped_textures[0] == 0x2000 as This);
+        // A global barrier that orders writes, a written buffer, a texture
+        // with no resource, an unknown group: the global UAV barrier.
+        let global = [GlobalBarrier { sync_before: ALL, sync_after: ALL, access_before: UAV, access_after: SRV }];
+        assert!(classify(&[group(BARRIER_TYPE_GLOBAL, 1, global.as_ptr().cast())]).global_uav);
+        let buffer = [BufferBarrier { sync_before: ALL, sync_after: ALL, access_before: UAV, access_after: SRV, resource: 0x3000 as This, offset: 0, size: 256 }];
+        assert!(classify(&[group(BARRIER_TYPE_BUFFER, 1, buffer.as_ptr().cast())]).global_uav);
+        let nameless = [texture(UAV, SRV, std::ptr::null())];
+        assert!(classify(&[group(BARRIER_TYPE_TEXTURE, 1, nameless.as_ptr().cast())]).global_uav);
+        assert!(classify(&[group(7, 1, global.as_ptr().cast())]).global_uav);
+        // More textures than the action holds: the global UAV barrier.
+        let many: Vec<TextureBarrier> = (1..=17).map(|i| texture(UAV, SRV, (i * 0x100) as This)).collect();
+        assert!(classify(&[group(BARRIER_TYPE_TEXTURE, 17, many.as_ptr().cast())]).global_uav);
+    }
 
     /// Only the oldest idle lists, those past the age, are stale (memory
     /// stack by skornuta, skornuta/victory-memory-stack 57fb136, GPL-3.0).

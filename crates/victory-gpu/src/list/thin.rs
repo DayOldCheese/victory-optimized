@@ -563,8 +563,29 @@ extern "system" fn barrier(this: This, count: u32, barriers: *const Barrier) -> 
     }
     0
 }
-extern "system" fn barrier_groups(this: This, count: u32, _groups: *const u8) {
-    front(this).put(BARRIER_GROUPS, &[u64::from(count)]);
+extern "system" fn barrier_groups(this: This, count: u32, groups: *const u8) {
+    if count == 0 {
+        return;
+    }
+    // Read now, while the title's arrays are there (`super::classify_barrier_groups`):
+    // the stream holds the outcome, 1 for the global UAV barrier, else the
+    // count of textures (times 2) and their pointers.
+    let action = super::classify_barrier_groups(count, groups);
+    if action.is_noop() {
+        return;
+    }
+    let mut words = [0u64; 17];
+    let len = if action.global_uav {
+        words[0] = 1;
+        1
+    } else {
+        words[0] = (action.scoped_len as u64) << 1;
+        for (i, &r) in action.scoped_textures[..action.scoped_len].iter().enumerate() {
+            words[1 + i] = r as u64;
+        }
+        1 + action.scoped_len
+    };
+    front(this).put(BARRIER_GROUPS, &words[..len]);
 }
 extern "system" fn viewports(this: This, count: u32, items: *const D3D12_VIEWPORT) {
     let count = if items.is_null() { 0 } else { count };
@@ -744,7 +765,19 @@ fn translate(list: This, stream: &[u64], left: impl Fn() -> bool) -> (u64, bool)
             BARRIER => {
                 super::barrier(list, n as u32, at_or(w, 1));
             }
-            BARRIER_GROUPS => super::barrier_groups(list, n as u32, std::ptr::null()),
+            BARRIER_GROUPS => {
+                let mut action = super::EnhancedAction::empty();
+                if n & 1 != 0 {
+                    action.global_uav = true;
+                } else {
+                    let scoped = ((n >> 1) & 0x1f).min(16).min(w.len().saturating_sub(1));
+                    action.scoped_len = scoped;
+                    for (i, &ptr) in w[1..1 + scoped].iter().enumerate() {
+                        action.scoped_textures[i] = ptr as This;
+                    }
+                }
+                super::apply_enhanced_action(list, &action);
+            }
             VIEWPORTS => state::viewports(list, n as u32, at(w, 1, n)),
             SCISSORS => state::scissors(list, n as u32, at(w, 1, n)),
             BLEND_FACTOR => state::blend_factor(list, at(w, 1, n)),
