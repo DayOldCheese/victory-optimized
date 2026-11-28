@@ -3160,6 +3160,59 @@ fn landable(line: &[Option<u64>], completed: u64) -> usize {
     line.iter().position(|f| f.is_some_and(|f| f > completed)).unwrap_or(line.len())
 }
 
+/// Whether declared ranges are read whole only once in so many submissions
+/// ([`lean::every`], `VICTORY_CARD_COMPARE_EVERY=<D>`; off by default), from
+/// VIctory-Hydra. Only with the relay, whose compares store the hashes they
+/// make. A shader's write to a piece no compare found changed lately reaches
+/// title memory at the range's next whole compare, at most `D` submissions
+/// after its flight landed. The compares of pieces that sends are about to
+/// hash again (Hydra's `VICTORY_CARD_COMPARE_EVERY_AHEAD`) are not ported:
+/// Hydra's Max-FPS preset turns them off.
+fn lean_on() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        let on = lean::every().is_some() && relay();
+        if lean::every().is_some() {
+            tracing::info!(
+                on,
+                every = lean::every(),
+                hot = lean::hot_span(),
+                "compares read a declared range whole once in so many submissions and its pieces found changed lately between                  (VICTORY_CARD_COMPARE_EVERY; needs the relay)"
+            );
+        }
+        on
+    })
+}
+
+/// The book of [`lean_on`]. Lock order: taken after `CARD_WORK` where that
+/// is held (`Host::card_before`), never the other way round, and alone by the
+/// thread that reads what compares found (with `CARD_WORK` let go).
+static LEAN: Mutex<Option<lean::Lean>> = Mutex::new(None);
+
+/// The parts of `span` whose pieces `chosen` says yes to, as spans.
+fn chosen_parts(shadow: &crate::shadow::Shadow, span: &crate::shadow::CardSpan, chosen: &[bool]) -> Vec<crate::shadow::CardSpan> {
+    let mut parts = Vec::new();
+    let mut i = 0u32;
+    while i < span.pieces {
+        if !chosen.get(i as usize).copied().unwrap_or(true) {
+            i += 1;
+            continue;
+        }
+        let from = i;
+        while i < span.pieces && chosen.get(i as usize).copied().unwrap_or(true) {
+            i += 1;
+        }
+        parts.push(crate::shadow::CardSpan {
+            from: shadow.card_piece(span, from).0 as u32,
+            to: shadow.card_piece(span, i - 1).1 as u32,
+            first: span.first + from,
+            pieces: i - from,
+            skew: span.skew,
+        });
+    }
+    parts
+}
+
 /// For one plan of copies in the card's memory, with [`relay`]: `flags`
 /// holds, for every piece of every range of the plan, the copy, the
 /// piece's number in the copy and whether the compare flagged it there (or
@@ -4407,6 +4460,9 @@ pub(crate) mod aside;
 pub(crate) mod awake;
 mod card_steps;
 mod card_time;
+/// Compares that read a declared range whole only once in a while, from
+/// ToLIManl/VIctory-Hydra (GPL-3.0-or-later, at 85e7e07d).
+pub(crate) mod lean;
 pub(crate) mod card_profile;
 #[cfg(feature = "diagnostics")]
 pub(crate) mod indirects;
@@ -5150,6 +5206,11 @@ impl Host {
         // Each byte once, as the copy-back joins the declared ranges. The
         // results go behind those of plans still in the air.
         let mut at = work.taken;
+        // With `lean_on`: a declared range with hashes is read whole once in
+        // so many submissions, and in its hot pieces by the compares between.
+        // (Under the lock of the book for the loop: taken after `CARD_WORK`.)
+        let mut book = (flown && lean_on()).then(|| LEAN.lock().unwrap_or_else(|e| e.into_inner()));
+        let every = lean::every().unwrap_or(0);
         for (shadow, ranges) in &declared {
             let mut sorted = ranges.clone();
             sorted.sort_unstable();
@@ -5165,20 +5226,42 @@ impl Host {
                 let Some(span) = shadow.card_span(from, to) else {
                     continue;
                 };
-                let compared = twin && u64::from(at + span.pieces) * 4 <= work.differs.2;
-                plan.ranges.push(CardRange {
-                    shadow: shadow.clone(),
-                    declared: (from, to),
-                    span,
-                    at,
-                    compared,
-                    picked: false,
-                });
-                if compared {
-                    at += span.pieces;
+                // The runs of pieces the compare reads: all of them, or with
+                // `lean_on` those `Lean::plan` chose (none may be). The pieces
+                // left get no range: `!compared` would have them fetched.
+                let chosen = match book.as_mut() {
+                    Some(book) if twin => book.get_or_insert_with(Default::default).plan(
+                        sent_as,
+                        every,
+                        lean::hot_span(),
+                        shadow.id(),
+                        span.first,
+                        span.pieces,
+                        (span.from, span.to),
+                    ),
+                    _ => None,
+                };
+                let parts = match chosen {
+                    Some(chosen) => chosen_parts(shadow, &span, &chosen),
+                    None => vec![span],
+                };
+                for part in parts {
+                    let compared = twin && u64::from(at + part.pieces) * 4 <= work.differs.2;
+                    plan.ranges.push(CardRange {
+                        shadow: shadow.clone(),
+                        declared: (from, to),
+                        span: part,
+                        at,
+                        compared,
+                        picked: false,
+                    });
+                    if compared {
+                        at += part.pieces;
+                    }
                 }
             }
         }
+        drop(book);
         for (shadow, from, len) in looked {
             let twin = shadow.card_sides().is_some_and(|(_, before, _)| before.is_some());
             if let Some(span) = shadow.card_span(*from, from + len)
@@ -5375,10 +5458,20 @@ impl Host {
                     })
                     .collect();
                 let fetched = flagged_pieces(&flags);
+                // With `lean_on`: the pieces this plan's compares found
+                // changed, for the book ([`lean::Lean::found`]).
+                let mut found: Vec<(u64, u32)> = Vec::new();
                 for r in plan.ranges.iter().filter(|r| !r.picked) {
                     let copy = std::sync::Arc::as_ptr(&r.shadow) as usize;
                     if upcheck::on() {
                         upcheck::declared(r.shadow.id(), r.span.from as usize, r.span.to as usize);
+                    }
+                    if r.compared && lean_on() {
+                        found.extend(
+                            (0..r.span.pieces)
+                                .filter(|&p| differs.get((r.at + p) as usize).is_some_and(|&d| torn::flagged(d)))
+                                .map(|p| (r.shadow.id(), r.span.first + p)),
+                        );
                     }
                     for p in 0..r.span.pieces {
                         if fetched.binary_search(&(copy, r.span.first + p)).is_err() {
@@ -5403,6 +5496,14 @@ impl Host {
                         }
                     }
                     crate::shadow::CARD_STATS[2].fetch_add(u64::from(r.span.pieces), Ordering::Relaxed);
+                }
+                if !found.is_empty() {
+                    // (`CARD_WORK` is not held here: the book comes after it.)
+                    let mut lean = LEAN.lock().unwrap_or_else(|e| e.into_inner());
+                    let lean = lean.get_or_insert_with(Default::default);
+                    for (copy, piece) in found {
+                        lean.found(copy, piece, plan.sent_as);
+                    }
                 }
             }
         }
@@ -10071,6 +10172,9 @@ impl Meter {
             {
                 // SAFETY: a live queue.
                 card_profile::line(frames, unsafe { host.queue.GetTimestampFrequency() }.unwrap_or(1));
+                if lean_on() {
+                    lean::lean_line(frames);
+                }
                 let [kept, left] = [0, 1].map(|i| crate::list::SYNCS[i].swap(0, Ordering::Relaxed) as f64 / frames);
                 tracing::info!(
                     "the title's pipeline syncs per frame: {kept:.0} with a global UAV barrier, {left:.0} left out as nothing \

@@ -256,6 +256,17 @@ pub fn plan(asked: Graphics, hw: &Hardware) -> Plan {
     // run 2026-11-28 15:33). A change of the translator: the next start
     // translates every shader again (the preload).
     set.push(("VICTORY_WAVE_LOCAL_FIRST".into(), "1".into()));
+    // VIctory-Hydra's DXIL passes (`bitcode/opt.rs`, at 85e7e07d) as its
+    // launch sets them: the usual ones and four of its own, redundant barriers
+    // left out, values forwarded through memory, loop-invariant code hoisted,
+    // extended folds. The card's time in a world frame on an RTX 3060 is the
+    // title's shaders (97 ms: compute 49.5, mesh 36.7, run 2026-11-28 16:38).
+    // A change of the translation: the next start translates every shader.
+    set.push(("VICTORY_SHADER_OPT".into(), "4031".into()));
+    // VIctory-Hydra's lean compares (`host/lean.rs`) at its Max-FPS value: a
+    // declared range read whole by the card's compare once in 60 submissions,
+    // its pieces found changed lately between.
+    set.push(("VICTORY_CARD_COMPARE_EVERY".into(), "60".into()));
     // (VICTORY_MESH_LANES and VICTORY_SHADER_LOOP_LIMIT, both of the
     // translator, are not set here until a run of their own has measured them.)
     //

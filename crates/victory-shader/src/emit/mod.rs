@@ -1498,7 +1498,10 @@ mod tests {
         assert_eq!(parse_shader_opt(Some(" 1 ")), 1);
         assert_eq!(parse_shader_opt(Some("0x1")), 1);
         assert_eq!(parse_shader_opt(Some("63")), 63, "the passes without the fast-math flags");
-        assert_eq!(parse_shader_opt(Some("127")), all);
+        // (127 was every pass before VIctory-Hydra's extended ones: 256-4096.)
+        assert_eq!(parse_shader_opt(Some("127")), 127);
+        assert_eq!(parse_shader_opt(Some(&all.to_string())), all);
+        assert_eq!(parse_shader_opt(Some("4031")), 4031, "VIctory-Hydra's launch: the usual ones and four of its own");
         assert_eq!(parse_shader_opt(Some("191")), usual);
         assert_eq!(parse_shader_opt(Some("0xffffffff")), known);
         assert_eq!(parse_shader_opt(Some("on")), usual);
