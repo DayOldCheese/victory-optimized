@@ -44,9 +44,9 @@ param(
     # Every shader and the loading pipelines made first (`victory preload`), then the game; the F1 menu's
     # PRELOAD SHADERS starts this again with it.
     [switch]$Preload,
-    # Only the shaders made first (`victory shaders`), with this start's switches; the pipelines are left
-    # to the driver's cache and the game (the full -Preload also makes every pipeline earlier runs used,
-    # which is the long part on a slower processor).
+    # The shaders and the pipelines earlier runs drew with made first (`victory preload --used`), with
+    # this start's switches; the full -Preload makes every pipeline ever known (an hour on a 6-core
+    # processor), this the used ones (minutes after a change of the translation, seconds otherwise).
     [switch]$PreloadShaders,
     [hashtable]$More = @{}
 )
@@ -187,11 +187,11 @@ Write-Host "Log: $log"
 Push-Location $repo   # victory.toml is read from here
 try {
     if ($PreloadShaders -and -not $preload) {
-        Write-Host 'Translating the shaders before the game starts (once per build; quick when they are there).'
+        Write-Host 'Translating the shaders, then making the pipelines earlier runs used, before the game starts (minutes after a change, seconds otherwise).'
         $began = Get-Date
-        & $victory shaders ([IO.Path]::GetDirectoryName($Exe)) 2>&1 | ForEach-Object { $line = "$_"; $writer.WriteLine("# shaders: $line"); $line }
+        & $victory preload --used ([IO.Path]::GetDirectoryName($Exe)) 2>&1 | ForEach-Object { $line = "$_"; $writer.WriteLine("# shaders: $line"); $line }
         $how = if ($LASTEXITCODE -eq 0) { 'done' } else { "ended with code $LASTEXITCODE" }
-        $said = 'Shaders {0} after {1:N1} min. Starting the game.' -f $how, ((Get-Date) - $began).TotalMinutes
+        $said = 'Shaders and used pipelines {0} after {1:N1} min. Starting the game.' -f $how, ((Get-Date) - $began).TotalMinutes
         $writer.WriteLine("# $said"); Write-Host $said
     }
     if ($preload) {

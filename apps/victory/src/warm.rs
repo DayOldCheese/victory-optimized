@@ -26,10 +26,11 @@ fn folder() -> Result<PathBuf> {
     Ok(cfg.cache_subdir("shaders")?.with_file_name("pipelines"))
 }
 
-pub fn run(jobs: Option<usize>, limit: Option<usize>, again: bool, used: bool, these: Option<String>) -> Result<()> {
+/// How many pipelines it made (0 when all it was asked for were made before).
+pub fn run(jobs: Option<usize>, limit: Option<usize>, again: bool, used: bool, these: Option<String>) -> Result<usize> {
     let dir = folder()?;
     if let Some(these) = these {
-        return make(&dir, &these);
+        return make(&dir, &these).map(|()| 0);
     }
     let began = Instant::now();
     // (A first preload on a PC no run has written pipelines down on yet: none known.)
@@ -105,7 +106,8 @@ pub fn run(jobs: Option<usize>, limit: Option<usize>, again: bool, used: bool, t
                             state.0.push(ms);
                             state.1 += usize::from(!there);
                             let count = state.0.len();
-                            if count.is_multiple_of(1000) {
+                            // (Every 100 for the used ones: a preload before a run shows them as they go.)
+                            if count.is_multiple_of(if used { 100 } else { 1000 }) {
                                 println!("{count} of {}, {:.0} s", all.len(), began.elapsed().as_secs_f64());
                             }
                             drop(state);
@@ -147,7 +149,7 @@ pub fn run(jobs: Option<usize>, limit: Option<usize>, again: bool, used: bool, t
         times.last().copied().unwrap_or(0.0),
         times.iter().sum::<f64>() / 1e3
     );
-    Ok(())
+    Ok(times.len())
 }
 
 /// `victory preload`'s last step: the pipelines a run makes while it loads

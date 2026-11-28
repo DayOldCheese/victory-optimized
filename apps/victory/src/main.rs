@@ -307,6 +307,12 @@ enum Command {
         /// own: every core to translate, two thirds of them to make).
         #[arg(long)]
         jobs: Option<usize>,
+        /// Only the pipelines earlier runs drew with (`warm --used`), into the
+        /// library only when one was made: minutes after a change of the
+        /// translation, seconds otherwise, where every known pipeline is an
+        /// hour on a 6-core processor.
+        #[arg(long)]
+        used: bool,
     },
     /// Play: the title with this fork's settings, as a start with no
     /// command at all does (a double click on the program beside the
@@ -480,9 +486,9 @@ fn main() -> Result<()> {
         }
         Command::Shaders { paths, jobs } => translate::precompile(paths, jobs),
         #[cfg(windows)]
-        Command::Warm { jobs, limit, again, used, these } => warm::run(jobs, limit, again, used, these),
+        Command::Warm { jobs, limit, again, used, these } => warm::run(jobs, limit, again, used, these).map(|_| ()),
         #[cfg(windows)]
-        Command::Preload { paths, jobs } => {
+        Command::Preload { paths, jobs, used } => {
             // The launcher and the F1 menu's restart pass it as a switch.
             let jobs = jobs
                 .or_else(|| std::env::var("VICTORY_PRELOAD_JOBS").ok()?.trim().parse().ok())
@@ -492,7 +498,11 @@ fn main() -> Result<()> {
             }
             play::explain_preload();
             translate::precompile(paths, jobs)?;
-            warm::run(jobs, None, false, false, None)?;
+            let made = warm::run(jobs, None, false, used, None)?;
+            if used && made == 0 {
+                println!("the pipelines earlier runs used were all made before: the library has them");
+                return Ok(());
+            }
             warm::into_library(jobs)
         }
         #[cfg(windows)]
