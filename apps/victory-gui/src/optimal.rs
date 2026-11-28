@@ -250,6 +250,12 @@ pub fn plan(asked: Graphics, hw: &Hardware) -> Plan {
     // A pipeline sync whose global UAV barrier orders nothing (nothing since
     // the last one stored) is left out: the card no longer drains for it.
     set.push(("VICTORY_SYNC_QUIET".into(), "1".into()));
+    // Console wave64 compute programs on NVIDIA's 32-lane waves: the exact
+    // local-waves form first, where it needs fewer group barriers between
+    // the halves of a wave (compute took 54.8 ms of the card a world frame,
+    // run 2026-11-28 15:33). A change of the translator: the next start
+    // translates every shader again (the preload).
+    set.push(("VICTORY_WAVE_LOCAL_FIRST".into(), "1".into()));
     if graphics == Graphics::Ultra {
         set.push((RAY_TRACING.into(), "1".into()));
     } else {

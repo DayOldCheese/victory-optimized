@@ -475,12 +475,56 @@ pub struct UserData {
 /// already translated came out changed (an extra evaluation in each), for
 /// the sake of 9 that did not translate.
 pub fn translate(container: &[u8]) -> Result<HostShader, ShaderError> {
-    match translate_plain(container) {
+    LAST_SYNCS.with(|n| n.set(0));
+    LOCAL_FIRST_TAKEN.with(|t| t.set(false));
+    let done = match translate_plain(container) {
         Err(ShaderError::Unsupported { what, .. }) if what == lower::FIRST_HALF => {
             lower::with_first_half_pairs(|| translate_plain(container))
         }
         other => other,
-    }
+    };
+    let form = format!(
+        "{} translation barriers{}",
+        LAST_SYNCS.with(std::cell::Cell::get),
+        if LOCAL_FIRST_TAKEN.with(std::cell::Cell::get) { ", local waves first" } else { "" }
+    );
+    LAST_FORM.with(|f| *f.borrow_mut() = form);
+    done
+}
+
+thread_local! {
+    /// The group barriers and meetings of the last program [`emit_program`] made.
+    static LAST_SYNCS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// The program [`translate`] gave was the local-waves form tried first ([`local_first`]).
+    static LOCAL_FIRST_TAKEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// What [`take_form`] gives.
+    static LAST_FORM: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// The form of the program the last [`translate`] on this thread gave: the
+/// group barriers and meetings the translation put into it, and whether it
+/// is the local-waves form tried first. For the log (which pipelines hold
+/// the card long, and why).
+pub fn take_form() -> String {
+    LAST_FORM.with(|f| std::mem::take(&mut *f.borrow_mut()))
+}
+
+/// Whether a console wave64 compute program on a host of 32-lane waves that
+/// translated with group barriers or meetings between the halves of its
+/// waves is tried once more first with each host wave as a wave of its own,
+/// where that is exact (the allocation idiom, [`lower::wave_local`]), and that
+/// form is taken if it has fewer (`VICTORY_WAVE_LOCAL_FIRST=1`; off unless
+/// asked).
+///
+/// Why: on an RTX 3060 the compute pipelines took 54.8 ms of the card in a
+/// world frame (run 2026-11-28 15:33), nearly all of them console wave64
+/// programs; the longest, 5.8 ms a dispatch of 160 groups of 64 threads. The
+/// exact local form was only tried for programs that did not translate
+/// otherwise, while a program that translated with exchanges paid two group
+/// barriers for each, in its loops too.
+fn local_first() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_WAVE_LOCAL_FIRST").is_some_and(|v| v == "1"))
 }
 
 fn translate_plain(container: &[u8]) -> Result<HostShader, ShaderError> {
@@ -558,7 +602,25 @@ fn emit_once(
 ) -> Result<HostShader, ShaderError> {
     // (what an earlier program's lowering on this thread left behind)
     lower::take_needs();
-    let original = emit_program(c, native, p, st, io, res);
+    let mut original = emit_program(c, native, p, st, io, res);
+    if local_first()
+        && native.stage == HwStage::Cs
+        && native.wave64
+        && lower::host_max_wave() == 32
+        && matches!(&original, Ok((_, wave)) if *wave != Some(64))
+        && LAST_SYNCS.with(std::cell::Cell::get) > 0
+        && lower::wave_local(p, st).is_ok()
+    {
+        let before = LAST_SYNCS.with(std::cell::Cell::get);
+        let local = lower::with_local_waves(|| emit_program(c, native, p, st, io, res));
+        let after = LAST_SYNCS.with(std::cell::Cell::get);
+        if matches!(&local, Ok((_, wave)) if *wave != Some(64)) && after < before {
+            LOCAL_FIRST_TAKEN.with(|t| t.set(true));
+            original = local;
+        } else {
+            LAST_SYNCS.with(|n| n.set(before));
+        }
+    }
     // A console wave64 compute program on a host of 32-lane waves that
     // still needs 64 lanes, or whose cross-lane code sits where not every
     // lane runs: once more with its early-outs left out
@@ -963,6 +1025,21 @@ fn loops_wave(native: &NativeProgram) -> bool {
 /// arrived later and wrote "no lane" over their ballot), their list stayed empty and those
 /// tiles of the water kept no light: dark rectangles beside lit objects.
 fn emit_program(
+    c: &Container,
+    native: &NativeProgram,
+    p: &ir::Program,
+    st: &structure::Structured,
+    io: &io::Io,
+    res: &resource::Resources,
+) -> Result<(HostShader, Option<u32>), ShaderError> {
+    let _ = lower::take_syncs();
+    let made = emit_program_counted(c, native, p, st, io, res);
+    LAST_SYNCS.with(|n| n.set(lower::take_syncs()));
+    made
+}
+
+/// [`emit_program`], its group barriers and meetings counted by the caller.
+fn emit_program_counted(
     c: &Container,
     native: &NativeProgram,
     p: &ir::Program,

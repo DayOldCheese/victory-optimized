@@ -69,6 +69,7 @@ fn build() -> [u8; 32] {
             "VICTORY_WAVE_DEEP_SKIPS",
             "VICTORY_WAVE_OWN_BITS",
             "VICTORY_WAVE_LOCAL",
+            "VICTORY_WAVE_LOCAL_FIRST",
             "VICTORY_F16_NEAREST",
             "VICTORY_FILTER_3D",
             "VICTORY_HELPER_OWN",
@@ -128,13 +129,28 @@ pub fn precompile(container: &[u8]) -> Result<bool, String> {
     Ok(MISSES.load(Ordering::Relaxed) == misses)
 }
 
+thread_local! {
+    /// The form of the translation the last [`host_shader`] on this thread gave.
+    static LAST_FORM: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// The form of the translation the last [`host_shader`] on this thread gave
+/// (the translator's group barriers and meetings in it; empty when not known).
+pub(crate) fn take_form() -> String {
+    LAST_FORM.with(|f| std::mem::take(&mut *f.borrow_mut()))
+}
+
 /// The translation of a console shader container, from the cache when
 /// there is one.
 pub(crate) fn host_shader(container: &[u8]) -> Result<HostShader, String> {
     let translate = |c: &[u8]| victory_shader::emit::translate(c).map_err(|e| e.to_string());
     let shader = match CACHE.get() {
         Some(cache) => cached(cache, &build(), container, translate),
-        None => translate(container),
+        None => {
+            let done = translate(container);
+            LAST_FORM.with(|f| *f.borrow_mut() = victory_shader::emit::take_form());
+            done
+        }
     }?;
     // Its static samplers into the list every process makes them from.
     #[cfg(windows)]
@@ -160,7 +176,7 @@ impl<F: Fn(&[u8]) -> Result<HostShader, String> + Send + Sync> Converter for Tra
     fn convert(&self, input: &[u8]) -> anyhow::Result<Vec<u8>> {
         self.ran.store(true, Ordering::Relaxed);
         let shader = (self.translate)(&input[32..]).map_err(anyhow::Error::msg)?;
-        Ok(encode(&shader))
+        Ok(with_form(encode(&shader), &victory_shader::emit::take_form()))
     }
 }
 
@@ -179,7 +195,8 @@ fn cached(
         let path = cache
             .get_or_convert(&converter, &input)
             .map_err(|e| format!("{e:#}"))?;
-        if let Some(shader) = std::fs::read(&path).ok().and_then(|b| decode(&b)) {
+        if let Some((shader, form)) = std::fs::read(&path).ok().and_then(|b| decode_entry(&b)) {
+            LAST_FORM.with(|f| *f.borrow_mut() = form);
             let (counter, what) = if converter.ran.load(Ordering::Relaxed) {
                 (&MISSES, "translated and cached")
             } else {
@@ -290,7 +307,37 @@ fn encode(s: &HostShader) -> Vec<u8> {
     out
 }
 
+#[cfg(test)]
 fn decode(bytes: &[u8]) -> Option<HostShader> {
+    decode_parts(bytes).and_then(|(shader, rest)| rest.is_empty().then_some(shader))
+}
+
+/// What follows a translation in its cache entry: the form the translator
+/// gave it ([`victory_shader::emit::take_form`]), for the log.
+const FORM: &[u8; 4] = b"FORM";
+
+fn with_form(mut entry: Vec<u8>, form: &str) -> Vec<u8> {
+    entry.extend_from_slice(FORM);
+    entry.extend((form.len() as u32).to_le_bytes());
+    entry.extend_from_slice(form.as_bytes());
+    entry
+}
+
+/// A cache entry: the translation and its form (empty for an entry written
+/// without one).
+fn decode_entry(bytes: &[u8]) -> Option<(HostShader, String)> {
+    let (shader, rest) = decode_parts(bytes)?;
+    if rest.is_empty() {
+        return Some((shader, String::new()));
+    }
+    let rest = rest.strip_prefix(FORM.as_slice())?;
+    let (len, text) = rest.split_at_checked(4)?;
+    let len = u32::from_le_bytes(len.try_into().ok()?) as usize;
+    (text.len() == len).then(|| (shader, String::from_utf8_lossy(text).into_owned()))
+}
+
+/// The translation at the start of `bytes`, and what follows it.
+fn decode_parts(bytes: &[u8]) -> Option<(HostShader, &[u8])> {
     struct Reader<'a>(&'a [u8]);
     impl<'a> Reader<'a> {
         fn take(&mut self, n: usize) -> Option<&'a [u8]> {
@@ -355,17 +402,20 @@ fn decode(bytes: &[u8]) -> Option<HostShader> {
             shift: u8::try_from(r.word()?).ok().filter(|&s| s < 32)?,
         });
     }
-    r.0.is_empty().then_some(HostShader {
-        stage,
-        dxil,
-        user_data,
-        samplers,
-        static_samplers,
-        root_cbvs,
-        root_srvs,
-        root_uavs,
-        root_indexed_views,
-    })
+    Some((
+        HostShader {
+            stage,
+            dxil,
+            user_data,
+            samplers,
+            static_samplers,
+            root_cbvs,
+            root_srvs,
+            root_uavs,
+            root_indexed_views,
+        },
+        r.0,
+    ))
 }
 
 #[cfg(test)]
@@ -454,5 +504,10 @@ mod tests {
         assert_eq!(decode(&bytes[..bytes.len() - 1]), None);
         assert_eq!(decode(&[bytes.as_slice(), &[0]].concat()), None);
         assert_eq!(decode(b"VSH0"), None);
+        // An entry carries the form the translator gave; one without it still reads.
+        let entry = with_form(bytes.clone(), "2 translation barriers, local waves first");
+        assert_eq!(decode_entry(&entry), Some((shader(), "2 translation barriers, local waves first".to_owned())));
+        assert_eq!(decode_entry(&bytes), Some((shader(), String::new())));
+        assert_eq!(decode_entry(&entry[..entry.len() - 1]), None);
     }
 }

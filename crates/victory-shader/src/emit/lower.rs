@@ -1306,6 +1306,19 @@ thread_local! {
     static LOCAL_ANY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// See [`with_pair_meetings`].
     static PAIR_MEETINGS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// See [`take_syncs`].
+    static SYNCS_MADE: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// The group barriers and meetings the lowering on this thread put into
+/// programs since the last call (not the title's own `s_barrier`s): what the
+/// halves of a console wave64 program pay to exchange on a 32-lane host.
+pub(super) fn take_syncs() -> u32 {
+    SYNCS_MADE.replace(0)
+}
+
+fn count_sync() {
+    SYNCS_MADE.with(|n| n.set(n.get() + 1));
 }
 
 /// LDS dwords a host thread group has (D3D12: 32 KiB).
@@ -4631,6 +4644,7 @@ impl<'a> Lower<'a> {
             self.group_sync(c);
             return;
         }
+        count_sync();
         let (i1t, i32t, void) = (self.s.t.i1, self.s.t.i32, self.s.t.void);
         let fence = self.s.m.i32(8);
         let head = self.cur;
@@ -4760,6 +4774,7 @@ impl<'a> Lower<'a> {
 
     /// A group barrier with an LDS fence in `block`.
     fn group_sync(&mut self, block: usize) {
+        count_sync();
         let mode = self.s.m.i32(meeting_mode());
         let void = self.s.t.void;
         self.s.op(block, "barrier", Attr::NoDuplicate, void, 80, &[mode]);

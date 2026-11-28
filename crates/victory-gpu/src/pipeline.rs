@@ -213,6 +213,7 @@ fn translate(container: &[u8]) -> Result<Translated, String> {
         None => Vec::new(),
     };
     let host = crate::shader_cache::host_shader(container)?;
+    let form = crate::shader_cache::take_form();
     let stores = programs.is_empty() || programs.iter().any(stores);
     let threads = programs.iter().find_map(|p| match &p.io {
         victory_shader::native::StageIo::Cs(cs) if cs.threads.iter().all(|&n| n > 0) => Some(cs.threads),
@@ -228,6 +229,7 @@ fn translate(container: &[u8]) -> Result<Translated, String> {
             };
             format!("{:?} wave{} vgprs {} code {}{cs}", p.stage, if p.wave64 { 64 } else { 32 }, p.vgprs, p.code.len())
         })
+        .chain((!form.is_empty()).then_some(form))
         .collect::<Vec<_>>()
         .join("; ");
     let used = programs
