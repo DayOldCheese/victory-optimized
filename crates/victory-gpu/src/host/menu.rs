@@ -1,21 +1,16 @@
-//! The F1 settings menu. F1 shows and hides it while our window has the
-//! focus; Up/Down pick a setting, Left/Right change it, Enter runs the line
-//! picked (save, save and restart, preload shaders, reset, close), Esc
-//! closes. Preloading saves, ends this run and has the launcher make every
-//! shader before the title starts again (`VICTORY_PRELOAD=1`, `victory
-//! preload`); it asks for a second Enter first. While it is
+//! Mandy's F1 menu. F1 shows and hides it while our window has the focus;
+//! Up/Down pick a line, Left/Right change a setting, Enter runs the line
+//! picked (restart, export or import a save, close), Esc closes. While it is
 //! shown the title sees no keyboard (`crate::SETTINGS_MENU_OPEN`, read by the
 //! input module); a pad still works.
 //!
-//! The settings are read once at start, so a change is saved at once (as well as by the save
-//! lines) to the file
-//! `VICTORY_MENU_FILE` names (`scripts\play-foxhound.ps1` sets it to
-//! `victory-settings.txt` in the repository's folder and applies it at every
-//! start) and takes effect at the next start; "SAVE AND RESTART" starts the
-//! launcher again (`VICTORY_MENU_PLAY`, with `VICTORY_MENU_ARGS`) and ends
-//! this run. The `VICTORY_MENU_...` settings are the launcher's own choices
-//! (DLSS mode, frame generation, frame rate, console, picture size), which it
-//! turns into the layer's switches; the others are the switches themselves.
+//! Only what a player changes in the game is here ([`ITEMS`]): the graphics
+//! are the Mandy app's one choice and every switch of the layer is the app's.
+//! A change is saved at once to the file `VICTORY_MENU_FILE` names
+//! (`victory-settings.txt` in the repository's folder, which the app writes
+//! at every start, keeping these lines) and takes effect at once (LIVE) or at
+//! the next start; "RESTART NOW" starts the launcher again
+//! (`VICTORY_MENU_PLAY`, with `VICTORY_MENU_ARGS`) and ends this run.
 //!
 //! In every build, as the stats panel is. Drawn as
 //! that panel is: white text on a black box, copied onto the swap chain's
@@ -43,17 +38,10 @@ const COLUMNS: u32 = 60;
 /// repository's link.
 const ROWS: usize = 20;
 const LINES: u32 = ROWS as u32 + 9;
-/// The action that preloads shaders, and what is said of it while it is picked.
-const PRELOAD: usize = 2;
-const ABOUT_PRELOAD: [&str; 3] = [
-    "MAKES EVERY SHADER AHEAD, THEN STARTS THE GAME AGAIN.",
-    "TAKES A WHILE: MAYBE A LONG TIME, DEPENDING ON HARDWARE.",
-    "A LATER UPDATE OF THIS BUILD MAY NEED A NEW PRELOAD.",
-];
 /// The actions that export and import the game's save (`crate::save_share`), and what is said
 /// of them while they are picked.
-const EXPORT: usize = 4;
-const IMPORT: usize = 5;
+const EXPORT: usize = 1;
+const IMPORT: usize = 2;
 const ABOUT_EXPORT: [&str; 3] = [
     "MAKES A ZIP OF YOUR SAVE IN SAVES, IN THE FOLDER OF",
     "GAME_SCARLETT_MASTER.EXE. SEND THAT ZIP TO SHARE IT.",
@@ -88,46 +76,14 @@ fn shown_name(name: &str) -> String {
         .collect()
 }
 
-/// The setting that turns MFG Unlocker on, and what is said of it while it is picked.
-const MFG: &str = "VICTORY_MFG_UNLOCKER";
-const ABOUT_MFG: [&str; 3] = [
-    "A MOD, NOT OURS: DLSS FRAME GEN ON RTX 20 AND 30 CARDS.",
-    "ON: DOWNLOADED FROM ITS GITHUB AT THE NEXT START, THEN RUN.",
-    "NVIDIA DOES NOT SUPPORT IT. IF THE GAME FAILS, TURN IT OFF.",
+/// What is said while a setting is picked.
+const ABOUT_ITEMS: [&str; 3] = [
+    "GRAPHICS ARE CHOSEN IN THE MANDY APP. FRAME GENERATION",
+    "AND THE SHADER PRELOAD ARE ON AT EVERY START.",
+    "",
 ];
-/// The DLSS setting, and what is said while it is picked on in a start without NVIDIA's files.
-const DLSS: &str = "VICTORY_MENU_DLSS";
-const ABOUT_NO_DLSS: [&str; 3] = [
-    "THE NVIDIA DLSS FILES ARE NOT ON THIS PC YET: THEY ARE",
-    "DOWNLOADED FROM NVIDIA ON GITHUB AT THE NEXT START",
-    "(ABOUT 70 MB, ONCE). SAVE AND RESTART NOW DOES IT.",
-];
-/// Frame generation that this run did not start with: it is made ready only at a start with it
-/// on (a start with it ready but off held some PCs at 14 fps, #515, #574), so turning it on takes
-/// a restart; a run started with it on changes it, or turns it off, live.
-const ABOUT_FRAMEGEN_RESTART: [&str; 3] = [
-    "RESTART REQUIRED TO ENABLE FRAME GENERATION: THIS RUN",
-    "STARTED WITHOUT IT. SAVE AND RESTART NOW TURNS IT ON.",
-    "AFTER THAT IT CHANGES, OR TURNS OFF, LIVE.",
-];
-const FRAMEGEN: &str = "VICTORY_MENU_FRAMEGEN";
-/// The console, and the picture row of each: only the one of the console picked is shown.
-const CONSOLE: &str = "VICTORY_MENU_CONSOLE";
-const X_RES: &str = "VICTORY_MENU_RES";
-const S_RES: &str = "VICTORY_MENU_S_RES";
-/// The Series S scene sizes and the DLSS mode of each (the picture is 1920x1080). Only DLSS
-/// changes it: the title's own FidelityFX path from 540 stopped it at the start (0xc0000094,
-/// a division by zero in the title, 2026-11-28), so with DLSS off the scene stays at 720.
-const S_MODES: [(&str, &str); 4] = [("1080", "dlaa"), ("720", "quality"), ("626", "balanced"), ("540", "performance")];
-const ABOUT_S_RES: [&str; 3] = [
-    "THE SIZE THE GAME RENDERS AT. THE PICTURE IS 1920X1080.",
-    "OTHER THAN 720 NEEDS DLSS: THIS SETS ITS MODE (1080 IS",
-    "DLAA, 720 QUALITY, 626 BALANCED, 540 PERFORMANCE).",
-];
-/// The note after the first Enter on it: the second one does it.
-const CONFIRM_PRELOAD: &str = "ENTER AGAIN: SAVE, CLOSE THE GAME AND PRELOAD";
 /// The last line of the box: where this build comes from.
-const REPO: &str = "GITHUB.COM/TRUSTNO1-CODER/VICTORY-NVIDIA";
+const REPO: &str = "GITHUB.COM/SOMPHHAIL/MANDY";
 const RIM: u32 = 4;
 const UPLOADS: usize = 4;
 
@@ -140,62 +96,26 @@ struct Item {
     live: bool,
 }
 
-const ON_UNSET: &[(&str, &str)] = &[("1", "ON"), ("", "OFF")];
 const UNSET_ON: &[(&str, &str)] = &[("", "OFF"), ("1", "ON")];
-const STAGES: &[(&str, &str)] = &[("2", "2"), ("1", "1"), ("0", "0 OFF")];
 
+/// Mandy's menu: what a player changes in the game. The graphics (console,
+/// picture size, DLSS, ray tracing) are the Mandy app's one choice, frame
+/// generation (FSR 3, or DLSS on RTX 40 and later) and the shader preload are
+/// on at every start, and the layer's switches are the app's: a switch left in
+/// this file from an earlier run turned frame generation off (late wait 0,
+/// 2026-11-28), and nobody should have to know them to play.
 /// The first value of each is what the launcher starts with.
 #[rustfmt::skip]
 const ITEMS: &[Item] = &[
-    // The launcher's own choices.
-    Item { var: "VICTORY_MENU_DLSS", label: "DLSS", values: &[("quality", "QUALITY"), ("balanced", "BALANCED"), ("performance", "PERFORMANCE"), ("dlaa", "DLAA (NATIVE)"), ("off", "OFF")], live: false },
-    Item { var: "VICTORY_MENU_FRAMEGEN", label: "FRAME GENERATION", values: &[("0", "OFF"), ("2", "2X"), ("3", "3X"), ("4", "4X"), ("5", "5X"), ("6", "6X (MOST)")], live: false },
-    // DLSS Frame Generation where it runs (RTX 40 and later), else AMD's FSR 3 (2X only).
-    Item { var: "VICTORY_MENU_FG_TYPE", label: "FRAME GEN TYPE", values: &[("auto", "AUTO"), ("dlss", "DLSS"), ("fsr", "FSR 3 (OLDER CARDS)")], live: false },
-    // Someone else's mod (apps\victory\src\play.rs): downloaded at the next start, then loaded.
-    Item { var: MFG, label: "MFG UNLOCKER (MOD, RTX 20/30)", values: UNSET_ON, live: false },
-    Item { var: "VICTORY_MENU_FPS", label: "FRAME RATE CAP", values: &[("1000", "NONE"), ("120", "120"), ("60", "60"), ("30", "30 (THE GAME)")], live: false },
     Item { var: "VICTORY_FPS_LINE", label: "FPS AT THE TOP", values: &[("1", "ON"), ("0", "OFF")], live: true },
     Item { var: "VICTORY_PANEL", label: "STATS PANEL (F3)", values: &[("0", "OFF"), ("1", "ON")], live: true },
     Item { var: "VICTORY_FULLSCREEN", label: "FULLSCREEN (NO BORDER)", values: UNSET_ON, live: false },
     Item { var: "VICTORY_MOUSE_CAPTURE", label: "MOUSE CAPTURE", values: UNSET_ON, live: false },
     Item { var: "VICTORY_IME_ENGLISH", label: "ENGLISH KEYBOARD", values: UNSET_ON, live: false },
-    Item { var: "VICTORY_MENU_CONSOLE", label: "CONSOLE", values: &[("series-x", "SERIES X"), ("series-s", "SERIES S (FASTER)")], live: false },
-    Item { var: X_RES, label: "SERIES X PICTURE", values: &[("1440", "2560X1440"), ("1080to1440", "1080P TO 1440P"), ("4k", "3840X2160")], live: false },
-    // In place of SERIES X PICTURE when CONSOLE is Series S.
-    Item { var: S_RES, label: "SERIES S PICTURE", values: &[("1080", "1920X1080 (DLAA)"), ("720", "1280X720 (THE GAME)"), ("626", "1113X626"), ("540", "960X540 (FASTEST)")], live: false },
-    // The layer's switches.
-    Item { var: "VICTORY_DLSS_PRESET", label: "DLSS MODEL", values: &[("", "DEFAULT"), ("k", "K"), ("j", "J"), ("m", "M"), ("l", "L")], live: false },
-    Item { var: "VICTORY_AMBIENT", label: "LIGHT ESTIMATE", values: &[("0.8", "0.8"), ("1", "1"), ("0.5", "0.5"), ("", "OFF")], live: false },
-    Item { var: "VICTORY_AMBIENT_SPECULAR", label: "REFLECTION ESTIMATE", values: ON_UNSET, live: false },
-    Item { var: "VICTORY_AMBIENT_AIR", label: "FOG CAP", values: &[("1.5", "1.5"), ("1", "1"), ("2", "2"), ("", "NONE")], live: false },
-    Item { var: "VICTORY_BVH_BUILDER", label: "RAY TRACING (SLOW, BROKEN)", values: UNSET_ON, live: false },
-    // On unless "0": a file saved by an earlier version holds an empty value (its OFF) or "1",
-    // and both start it on, so nobody keeps it off from before by accident (2026-11-27).
-    Item { var: "VICTORY_WATER_LIGHT", label: "WATER LIGHT", values: &[("", "ON"), ("0", "OFF")], live: false },
-    Item { var: "VICTORY_LEAVE_OUT", label: "HEAT HAZE AND DECAL DEFRAG", values: &[("02384a60fda6f2d0,731a39171b568298", "LEFT OUT"), ("", "RUN (SLOWER, SMEARS)")], live: false },
-    Item { var: "VICTORY_EARLY_DEPTH", label: "EARLY DEPTH TEST", values: ON_UNSET, live: false },
-    Item { var: "VICTORY_WC_NO_BACK", label: "SKIP BIG COPY-BACKS", values: ON_UNSET, live: false },
-    Item { var: "VICTORY_SOFT_VIEWS", label: "SOFT VIEWS (NO CUT FREEZES)", values: &[("copies", "ON"), ("", "OFF")], live: false },
-    Item { var: "VICTORY_TEXTURE_NO_WAIT", label: "TEXTURE NO WAIT", values: ON_UNSET, live: false },
-    Item { var: "VICTORY_RELAY", label: "RELAY (SPEED, TRIANGLES)", values: STAGES, live: false },
-    Item { var: "VICTORY_CARD_STEPS", label: "CARD STEPS", values: STAGES, live: false },
-    Item { var: "VICTORY_INDIRECT_BATCH", label: "INDIRECT BATCH", values: STAGES, live: false },
-    Item { var: "VICTORY_CARD_BUFFERS_MIN_KB", label: "CARD COMPARES FROM (KB)", values: &[("64", "64"), ("1024", "1024")], live: false },
-    Item { var: "VICTORY_PORT_CONSTANTS", label: "CONSTANTS HEAP IN PLACE", values: UNSET_ON, live: false },
-    // THIN records the title's list calls on our threads. On an RTX 5080 with a 6-core CPU heads did not
-    // draw with it and frames were slower (14 a second with it, 21 to 28 without): switches for it and for
-    // what goes with it. Frame generation needs the line of submissions: without THIN, ASYNC SUBMIT gives it.
-    Item { var: "VICTORY_THIN", label: "THIN LISTS (HEADS MAY BE MISSING)", values: ON_UNSET, live: false },
-    Item { var: "VICTORY_JOIN_PARTS", label: "JOIN PARTS", values: &[("8", "8"), ("", "1 (OFF)")], live: false },
-    Item { var: "VICTORY_ASYNC_SUBMIT", label: "ASYNC SUBMIT (FRAME GEN WITHOUT THIN)", values: UNSET_ON, live: false },
 ];
 /// The lines after the settings.
-const ACTIONS: [&str; 7] = [
-    "SAVE AND RESTART NOW",
-    "SAVE FOR NEXT START",
-    "PRELOAD SHADERS (RESTARTS THE GAME)",
-    "RESET ALL TO PLAY DEFAULTS",
+const ACTIONS: [&str; 4] = [
+    "RESTART NOW (FOR THE CHANGES MARKED *)",
     "EXPORT SAVE (TO SAVES IN THE GAME FOLDER)",
     "IMPORT SAVE (PICK FROM SAVES)",
     "CLOSE",
@@ -293,10 +213,9 @@ fn new_console(command_line: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Whether a change of `item` shows at once. Frame generation does when this run started with
-/// it ready (the launcher asks for that whenever Streamline is there).
+/// Whether a change of `item` shows at once.
 fn live(item: &Item) -> bool {
-    item.live || (item.var == "VICTORY_MENU_FRAMEGEN" && crate::streamline::framegen_live())
+    item.live
 }
 
 /// Whether the frame-rate line is shown at the top while the menu is closed
@@ -498,20 +417,9 @@ impl Menu {
         crate::SETTINGS_MENU_OPEN.load(Ordering::Relaxed)
     }
 
-    /// The value of the setting `var` as the menu holds it now.
-    fn value(&self, var: &str) -> &str {
-        ITEMS.iter().position(|i| i.var == var).map_or("", |i| self.values[i].as_str())
-    }
-
-    /// Row `row` is left out: the picture row of the console not picked.
-    fn hidden(&self, row: usize) -> bool {
-        let series_s = self.value(CONSOLE) == "series-s";
-        ITEMS.get(row).is_some_and(|i| if series_s { i.var == X_RES } else { i.var == S_RES })
-    }
-
     /// The rows shown, settings then actions.
     fn rows(&self) -> Vec<usize> {
-        (0..ITEMS.len() + ACTIONS.len()).filter(|r| !self.hidden(*r)).collect()
+        (0..ITEMS.len() + ACTIONS.len()).collect()
     }
 
     /// The row shown `step` (+1 / -1) from the one picked, round the ends.
@@ -533,7 +441,7 @@ impl Menu {
         let at = rows.iter().position(|r| *r == self.at).unwrap_or(0);
         let first = at.saturating_sub(ROWS / 2).min(total.saturating_sub(ROWS));
         let mut out = vec![
-            "SETTINGS                       F1 OR ESC CLOSES".to_owned(),
+            "MANDY                          F1 OR ESC CLOSES".to_owned(),
             "UP/DOWN PICK  LEFT/RIGHT CHANGE  ENTER DOES IT".to_owned(),
             String::new(),
         ];
@@ -553,25 +461,12 @@ impl Menu {
             out.push(String::new());
         }
         out.push(String::new());
-        let about = if self.at == ITEMS.len() + PRELOAD {
-            ABOUT_PRELOAD
-        } else if self.at == ITEMS.len() + EXPORT {
+        let about = if self.at == ITEMS.len() + EXPORT {
             ABOUT_EXPORT
         } else if self.at == ITEMS.len() + IMPORT {
             ABOUT_IMPORT
-        } else if ITEMS.get(self.at).is_some_and(|i| i.var == MFG) {
-            ABOUT_MFG
-        } else if ITEMS.get(self.at).is_some_and(|i| i.var == S_RES) {
-            ABOUT_S_RES
-        } else if ITEMS.get(self.at).is_some_and(|i| i.var == DLSS)
-            && !matches!(self.values[self.at].as_str(), "" | "off")
-            && std::env::var_os("VICTORY_STREAMLINE_DIR").is_none()
-        {
-            ABOUT_NO_DLSS
-        } else if ITEMS.get(self.at).is_some_and(|i| i.var == FRAMEGEN && !live(i))
-            && !matches!(self.values[self.at].as_str(), "" | "0")
-        {
-            ABOUT_FRAMEGEN_RESTART
+        } else if self.at < ITEMS.len() {
+            ABOUT_ITEMS
         } else {
             [""; 3]
         };
@@ -616,31 +511,6 @@ impl Menu {
             self.apply_live(i);
         }
         self.note.clear();
-        if item.var == FRAMEGEN && !live(item) && !matches!(self.values[i].as_str(), "" | "0") {
-            "RESTART REQUIRED TO ENABLE FRAME GENERATION".clone_into(&mut self.note);
-        }
-        self.match_series_s(item.var);
-    }
-
-    /// On Series S the scene's size and DLSS's mode are one choice: a change of either
-    /// (`changed`) sets the other. DLSS off is the game's 720, and 720 picked leaves it off.
-    fn match_series_s(&mut self, changed: &str) {
-        let (Some(dlss), Some(res)) = (ITEMS.iter().position(|i| i.var == DLSS), ITEMS.iter().position(|i| i.var == S_RES)) else {
-            return;
-        };
-        if self.value(CONSOLE) != "series-s" {
-            return;
-        }
-        let off = matches!(self.values[dlss].as_str(), "" | "off");
-        if changed == DLSS {
-            let size = S_MODES.iter().find(|(_, m)| *m == self.values[dlss]).map_or("720", |(s, _)| *s);
-            size.clone_into(&mut self.values[res]);
-        } else if changed == S_RES
-            && !(off && self.values[res] == "720")
-            && let Some((_, mode)) = S_MODES.iter().find(|(s, _)| *s == self.values[res])
-        {
-            (*mode).clone_into(&mut self.values[dlss]);
-        }
     }
 
     /// A setting the build reads at each use: changed in this run's environment at once.
@@ -657,8 +527,6 @@ impl Menu {
             }
         }
         match var {
-            // Off (0) or the frames shown for each one rendered, from the next present on.
-            "VICTORY_MENU_FRAMEGEN" => crate::streamline::set_framegen(value.parse().unwrap_or(0)),
             "VICTORY_FPS_LINE" => fps_line_on().store(value != "0", Ordering::Relaxed),
             "VICTORY_PANEL" => super::panel::shown().store(value == "1", Ordering::Relaxed),
             _ => {}
@@ -714,7 +582,8 @@ impl Menu {
     }
 
     /// Starts the launcher again in a new console, a few seconds on, and ends this run.
-    /// `preload`: the launcher makes every shader first (`VICTORY_PRELOAD=1`, for that start alone).
+    /// `preload`: the launcher makes every shader first (`VICTORY_PRELOAD=1`, for that start alone;
+    /// the app's starts preload the used pipelines every time, so the menu does not ask it).
     fn restart(&mut self, preload: bool) {
         let Some(play) = std::env::var_os("VICTORY_MENU_PLAY") else {
             self.note = "SAVED. START THE LAUNCHER AGAIN YOURSELF".to_owned();
@@ -847,14 +716,6 @@ impl Menu {
         }
     }
 
-    /// Removes the settings file: the launcher's own settings at the next start.
-    fn reset(&mut self) {
-        if let Some(path) = settings_file() {
-            let _ = std::fs::remove_file(path);
-        }
-        self.note = "RESET. PLAY DEFAULTS AT THE NEXT START".to_owned();
-    }
-
     /// Changes a setting and saves it at once: many players changed settings and closed the
     /// menu without the save lines, and lost them. The save lines stay (and restart, preload).
     fn change_and_save(&mut self, i: usize, step: isize) {
@@ -894,7 +755,7 @@ impl Menu {
                 continue;
             }
             // Only an Enter right after the first one starts a preload or an import.
-            let confirmed = self.note == CONFIRM_PRELOAD || self.note == CONFIRM_IMPORT;
+            let confirmed = self.note == CONFIRM_IMPORT;
             if confirmed {
                 self.note.clear();
             }
@@ -923,16 +784,6 @@ impl Menu {
                             self.restart(false);
                         }
                     }
-                    1 => {
-                        self.save();
-                    }
-                    PRELOAD if !confirmed => self.note = CONFIRM_PRELOAD.to_owned(),
-                    PRELOAD => {
-                        if self.save() {
-                            self.restart(true);
-                        }
-                    }
-                    3 => self.reset(),
                     EXPORT => self.export_save(),
                     IMPORT => {
                         self.read_imports();
@@ -1044,10 +895,10 @@ mod tests {
         }
         let mut menu = Menu { values: ITEMS.iter().map(|_| String::new()).collect(), started: Vec::new(), at: 0, note: String::new(), changed: false, painted: None, buffers: None, failed: false, imports: Vec::new(), import_at: 0, picking: false };
         menu.started = menu.values.clone();
-        let dlss = ITEMS.iter().position(|i| i.var == "VICTORY_MENU_DLSS").expect("in the menu");
-        menu.change_and_save(dlss, 1);
+        let full = ITEMS.iter().position(|i| i.var == "VICTORY_FULLSCREEN").expect("in the menu");
+        menu.change_and_save(full, 1);
         let text = std::fs::read_to_string(home.join("victory-settings.txt")).expect("saved without a save line");
-        assert!(text.contains("VICTORY_MENU_DLSS=quality"), "{text}");
+        assert!(text.contains("VICTORY_FULLSCREEN=1"), "{text}");
         assert_eq!(menu.note, "SAVED. APPLIES WHEN VICTORY.EXE STARTS THE GAME");
         // Every note fits the box and has its letters.
         for note in [menu.note.as_str(), "SAVED. ON NOW", "SAVED. APPLIES AT THE NEXT START", "NO FOLDER FOR THE SETTINGS FILE"] {
@@ -1085,106 +936,34 @@ mod tests {
                 let n = lines.len();
                 assert!(lines[n - 2].starts_with("* = CHANGED") || lines[n - 2] == note, "{}", lines[n - 2]);
                 assert_eq!(lines[n - 1], REPO);
-                // What a preload costs, and what MFG Unlocker is, is said while it is picked, and only then.
+                // What a save's export and import do, and that the graphics are the app's, is said while picked.
                 let about = &lines[n - 5..n - 2];
-                if at == ITEMS.len() + PRELOAD {
-                    assert_eq!(about, ABOUT_PRELOAD);
-                } else if at == ITEMS.len() + EXPORT {
+                if at == ITEMS.len() + EXPORT {
                     assert_eq!(about, ABOUT_EXPORT);
                 } else if at == ITEMS.len() + IMPORT {
                     assert_eq!(about, ABOUT_IMPORT);
-                } else if at < ITEMS.len() && ITEMS[at].var == MFG {
-                    assert_eq!(about, ABOUT_MFG);
-                } else if at < ITEMS.len() && ITEMS[at].var == S_RES {
-                    assert_eq!(about, ABOUT_S_RES);
+                } else if at < ITEMS.len() {
+                    assert_eq!(about, ABOUT_ITEMS);
                 } else {
                     assert!(about.iter().all(String::is_empty), "{about:?}");
                 }
             }
         }
-        assert_eq!(ACTIONS[PRELOAD], "PRELOAD SHADERS (RESTARTS THE GAME)");
-        assert!(CONFIRM_PRELOAD.len() <= COLUMNS as usize);
         assert_eq!(ACTIONS[EXPORT], "EXPORT SAVE (TO SAVES IN THE GAME FOLDER)");
         assert_eq!(ACTIONS[IMPORT], "IMPORT SAVE (PICK FROM SAVES)");
         let pick = [PICK_TITLE, PICK_HELP, PICK_NONE, PICK_BACK, CONFIRM_IMPORT, "IMPORT FAILED: THAT ZIP IS DAMAGED OR NOT A SAVE"];
-        for line in ABOUT_EXPORT.iter().chain(&ABOUT_IMPORT).chain(&ABOUT_PICK).chain(&pick) {
+        for line in ABOUT_EXPORT.iter().chain(&ABOUT_IMPORT).chain(&ABOUT_PICK).chain(&ABOUT_ITEMS).chain(&pick) {
             assert!(line.len() <= COLUMNS as usize, "{line}");
             assert!(line.bytes().all(|c| glyph(c) != glyph(b'#')), "{line}");
         }
-        assert!(ABOUT_MFG.iter().all(|l| l.len() <= COLUMNS as usize));
-        for line in ABOUT_NO_DLSS {
-            assert!(line.len() <= COLUMNS as usize && line.bytes().all(|c| glyph(c) != glyph(b'#')), "{line}");
-        }
-        // DLSS picked on where NVIDIA's files are missing (no VICTORY_STREAMLINE_DIR in tests): said so.
-        let dlss = ITEMS.iter().position(|i| i.var == DLSS).expect("in the menu");
-        menu.at = dlss;
-        menu.values[dlss] = "quality".to_owned();
-        let lines = menu.lines();
-        assert_eq!(&lines[lines.len() - 5..lines.len() - 2], ABOUT_NO_DLSS);
-        menu.values[dlss] = "off".to_owned();
-        let lines = menu.lines();
-        assert!(lines[lines.len() - 5..lines.len() - 2].iter().all(String::is_empty));
-        assert_eq!(ITEMS.iter().filter(|i| i.var == MFG).count(), 1);
-        // Frame generation turned on in a run started without it (no Streamline in tests): a
-        // restart is required, and the menu says so; OFF needs no word.
-        for line in ABOUT_FRAMEGEN_RESTART {
-            assert!(line.len() <= COLUMNS as usize && line.bytes().all(|c| glyph(c) != glyph(b'#')), "{line}");
-        }
-        let fg = ITEMS.iter().position(|i| i.var == FRAMEGEN).expect("in the menu");
-        menu.at = fg;
-        menu.values[fg] = "0".to_owned();
-        menu.change(fg, 1);
-        assert_eq!(menu.values[fg], "2");
-        assert_eq!(menu.note, "RESTART REQUIRED TO ENABLE FRAME GENERATION");
-        let lines = menu.lines();
-        assert_eq!(&lines[lines.len() - 5..lines.len() - 2], ABOUT_FRAMEGEN_RESTART);
-        menu.change(fg, -1);
-        assert!(menu.note.is_empty());
-        let lines = menu.lines();
-        assert!(lines[lines.len() - 5..lines.len() - 2].iter().all(String::is_empty));
     }
 
+    /// Nothing of the layer's switches, the graphics or someone else's mod is in Mandy's menu.
     #[test]
-    fn the_picture_line_is_the_consoles() {
-        let mut menu = Menu { values: ITEMS.iter().map(|_| String::new()).collect(), started: Vec::new(), at: 0, note: String::new(), changed: false, painted: None, buffers: None, failed: false, imports: Vec::new(), import_at: 0, picking: false };
-        menu.started = menu.values.clone();
-        let at = |var: &str| ITEMS.iter().position(|i| i.var == var).expect("in the menu");
-        let (console, x, s, dlss) = (at(CONSOLE), at(X_RES), at(S_RES), at(DLSS));
-        let shown = |menu: &Menu, label: &str| menu.lines().iter().any(|l| l.contains(label));
-        "series-x".clone_into(&mut menu.values[console]);
-        assert!(shown(&menu, "SERIES X PICTURE") && !shown(&menu, "SERIES S PICTURE"));
-        // down from the console: the Series X line, never the hidden one
-        menu.at = console;
-        assert_eq!(menu.step(1), x);
-        assert!(!menu.rows().contains(&s));
-        "series-s".clone_into(&mut menu.values[console]);
-        assert!(shown(&menu, "SERIES S PICTURE") && !shown(&menu, "SERIES X PICTURE"));
-        assert_eq!(menu.step(1), s);
-        assert_eq!(menu.step(-1), console - 1);
-        // the size and DLSS's mode follow each other on Series S
-        "quality".clone_into(&mut menu.values[dlss]);
-        "720".clone_into(&mut menu.values[s]);
-        menu.change(s, 1);
-        assert_eq!((menu.values[s].as_str(), menu.values[dlss].as_str()), ("626", "balanced"));
-        menu.change(s, 1);
-        assert_eq!((menu.values[s].as_str(), menu.values[dlss].as_str()), ("540", "performance"));
-        menu.change(dlss, -2);
-        assert_eq!((menu.values[s].as_str(), menu.values[dlss].as_str()), ("720", "quality"));
-        // DLSS off is 720, and 720 leaves it off; another size turns DLSS on at its mode
-        menu.change(dlss, -1);
-        assert_eq!((menu.values[s].as_str(), menu.values[dlss].as_str()), ("720", "off"));
-        menu.change(s, -1);
-        assert_eq!((menu.values[s].as_str(), menu.values[dlss].as_str()), ("1080", "dlaa"));
-        "off".clone_into(&mut menu.values[dlss]);
-        "626".clone_into(&mut menu.values[s]);
-        menu.change(s, -1);
-        assert_eq!((menu.values[s].as_str(), menu.values[dlss].as_str()), ("720", "off"));
-        menu.change(s, 2);
-        assert_eq!((menu.values[s].as_str(), menu.values[dlss].as_str()), ("540", "performance"));
-        menu.at = s;
-        assert_eq!(&menu.lines()[menu.lines().len() - 5..menu.lines().len() - 2], ABOUT_S_RES);
-        for line in ABOUT_S_RES {
-            assert!(line.len() <= COLUMNS as usize && line.bytes().all(|b| glyph(b) != glyph(b'#') || b == b'#'), "{line}");
+    fn only_what_a_player_changes_in_the_game() {
+        for item in ITEMS {
+            assert!(!item.var.starts_with("VICTORY_MENU_"), "{}", item.var);
+            assert!(!["VICTORY_MFG_UNLOCKER", "VICTORY_THIN", "VICTORY_LATE_WAIT", "VICTORY_BVH_BUILDER"].contains(&item.var));
         }
     }
 

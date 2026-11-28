@@ -228,6 +228,11 @@ pub fn plan(asked: Graphics, hw: &Hardware) -> Plan {
     }
     // MFG Unlocker is not used (the player's choice: FSR 3 frame generation).
     unset.push("VICTORY_MFG_UNLOCKER_DLL".into());
+    // The two-queue plan, a dry run that only counts (everything still runs on
+    // the direct queue): how many of the title's compute submissions a real
+    // compute queue on the card would take, and what they would wait for.
+    // It decides whether that queue is built.
+    set.push(("VICTORY_ASYNC_QUEUE".into(), "plan".into()));
     if graphics == Graphics::Ultra {
         set.push((RAY_TRACING.into(), "1".into()));
     } else {
@@ -238,19 +243,26 @@ pub fn plan(asked: Graphics, hw: &Hardware) -> Plan {
 
 /// `text` (a settings file of `VICTORY_X=value` lines) with the plan's lines
 /// set and unset; its other lines stay.
+/// The settings Mandy's F1 menu saves (`crates/victory-gpu/src/host/menu.rs`,
+/// `ITEMS`): the only lines of the file kept from before.
+pub const F1_KEPT: [&str; 5] = ["VICTORY_FPS_LINE", "VICTORY_PANEL", "VICTORY_FULLSCREEN", "VICTORY_MOUSE_CAPTURE", "VICTORY_IME_ENGLISH"];
+
+/// The settings file for this start, written whole: the plan's switches and
+/// the F1 menu's own lines ([`F1_KEPT`]) of `text`, nothing else. Merging into
+/// what was there kept a switch an earlier start had set (late wait 0, from a
+/// trial): frame generation stayed off for a whole run (2026-11-28 13:43).
 pub fn apply(text: &str, p: &Plan) -> String {
-    let managed = |l: &str| {
+    let kept = |l: &str| {
         l.split_once('=').is_some_and(|(n, _)| {
             let n = n.trim();
-            p.set.iter().any(|(k, _)| k == n) || p.unset.iter().any(|k| k == n)
+            F1_KEPT.contains(&n) && !p.set.iter().any(|(k, _)| k == n) && !p.unset.iter().any(|k| k == n)
         })
     };
-    let mut out: Vec<String> = text.lines().filter(|l| !managed(l)).map(str::to_owned).collect();
+    let mut out = vec!["# Written by the Mandy app at every start; the F1 menu adds its own lines.".to_owned()];
+    out.extend(text.lines().filter(|l| kept(l)).map(str::to_owned));
     out.extend(p.set.iter().map(|(k, v)| format!("{k}={v}")));
     let mut s = out.join("\r\n");
-    if !s.is_empty() {
-        s.push_str("\r\n");
-    }
+    s.push_str("\r\n");
     s
 }
 
@@ -278,13 +290,16 @@ mod tests {
         let get = |k: &str| p.set.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
         assert_eq!(get("VICTORY_INPLACE"), Some("1"));
         assert_eq!(get("VICTORY_LATE_WAIT"), None);
-        // F1's saved console and frame generation do not override the app's.
+        // F1's old console and frame generation, and a switch left from an
+        // earlier start, do not survive; the F1 menu's own lines do.
         let file = apply("VICTORY_MENU_CONSOLE=series-x
 VICTORY_MENU_FRAMEGEN=5
-VICTORY_AMBIENT_SPECULAR=
+VICTORY_LATE_WAIT=0
+VICTORY_FULLSCREEN=1
 ", &p);
         assert!(!file.contains("VICTORY_MENU_CONSOLE") && !file.contains("VICTORY_MENU_FRAMEGEN"));
-        assert!(file.contains("VICTORY_AMBIENT_SPECULAR="), "other F1 choices stay");
+        assert!(!file.contains("VICTORY_LATE_WAIT"), "{file}");
+        assert!(file.contains("VICTORY_FULLSCREEN=1"), "the F1 menu's lines stay");
         // Each switch once.
         let mut names: Vec<&String> = p.set.iter().map(|(k, _)| k).collect();
         names.sort();
@@ -310,10 +325,11 @@ VICTORY_AMBIENT_SPECULAR=
         let hw = pc("NVIDIA GeForce RTX 3060", 11.8, 12);
         let ultra = plan(Graphics::Ultra, &hw);
         assert!(ultra.set.iter().any(|(k, v)| k == RAY_TRACING && v == "1"));
-        let file = apply("# Saved by the F1 menu\r\nVICTORY_AMBIENT_SPECULAR=\r\n", &ultra);
-        assert!(file.contains("VICTORY_AMBIENT_SPECULAR=\r\n") && file.contains("VICTORY_BVH_BUILDER=1"));
+        let file = apply("# Saved by the F1 menu\r\nVICTORY_FPS_LINE=0\r\nVICTORY_AMBIENT_SPECULAR=\r\n", &ultra);
+        assert!(file.contains("VICTORY_FPS_LINE=0\r\n") && file.contains("VICTORY_BVH_BUILDER=1"));
+        assert!(!file.contains("VICTORY_AMBIENT_SPECULAR"), "not the F1 menu's any more");
         let back = apply(&file, &plan(Graphics::Quality, &hw));
-        assert!(!back.contains("VICTORY_BVH_BUILDER") && back.contains("VICTORY_AMBIENT_SPECULAR="));
+        assert!(!back.contains("VICTORY_BVH_BUILDER") && back.contains("VICTORY_FPS_LINE=0"));
         assert_eq!(back.matches("VICTORY_THIN_THREADS").count(), 1);
     }
 
