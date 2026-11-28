@@ -2590,11 +2590,26 @@ pub(super) fn apply_enhanced_action(this: This, action: &EnhancedAction) {
     if let Some(list) = host_list(this) {
         use windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_BARRIER;
         use windows::core::Interface;
+        // `VICTORY_SYNC_QUIET=1` (`crate::draw::State::sync_needed`): a UAV
+        // barrier with nothing stored since the last one in this list (no
+        // storing draw or dispatch, no copy, resolve, clear or memory write)
+        // orders nothing and is left out; the card drained for it before.
+        // Texture layouts are not these barriers' to keep: the layer's own
+        // state changes of its copies (`ensure_state`) are left as they are.
+        let mut needed = true;
+        with_state(this, |_, state| {
+            state.synced();
+            needed = state.sync_needed();
+        });
+        if !needed {
+            SYNCS[1].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return;
+        }
+        SYNCS[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if action.global_uav {
             BARRIERS[2].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             #[cfg(feature = "diagnostics")]
             crate::copystat::add(crate::copystat::C::WaitsForGroups, 1);
-            with_state(this, |_, state| state.synced());
             // SAFETY: the same layout; no resource named.
             let barrier = unsafe { std::mem::transmute::<Barrier, D3D12_RESOURCE_BARRIER>(UAV_BARRIER) };
             // SAFETY: an open list.
@@ -2629,7 +2644,6 @@ pub(super) fn apply_enhanced_action(this: This, action: &EnhancedAction) {
             }
             if n > 0 {
                 BARRIERS[3].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                with_state(this, |_, state| state.synced());
                 // SAFETY: same layout as `D3D12_RESOURCE_BARRIER`; borrowed live pointers.
                 let slice = unsafe {
                     std::slice::from_raw_parts(

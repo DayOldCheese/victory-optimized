@@ -1929,7 +1929,7 @@ impl State {
     /// False if the draw or dispatch must not run: a root SRV it reads
     /// could not be given a view.
     pub(crate) fn bind(&mut self, list: &HostList, p: &HostPipeline, compute: bool) -> bool {
-        if self.quiet && p.stages.iter().any(|s| s.translated().stores || s.shader.ambient.is_some()) {
+        if self.quiet && p.stages.iter().any(|s| s.translated().writes || s.shader.ambient.is_some()) {
             self.quiet = false;
         }
         let l = &list.list;
