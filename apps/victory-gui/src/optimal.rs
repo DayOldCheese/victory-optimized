@@ -120,6 +120,17 @@ pub struct Plan {
 /// The switches [`plan`] manages in the settings file.
 pub const RAY_TRACING: &str = "VICTORY_BVH_BUILDER";
 
+/// The title's memory in place, on trial: its windows outside buffers are
+/// buffers placed over the title's own memory (`VICTORY_INPLACE=1`: not 2,
+/// which the layer's late wait rules out), that memory a driver heap the
+/// card reads fast (`VICTORY_UMA_DRIVER`, from XCL through insenzaboor), and
+/// the refreshes of what is read in place left out (`VICTORY_UMA_DIRECT`).
+/// The submitting thread spent 17.6 ms of 48 refreshing and 7.7 asking the
+/// write watch in a world frame on an RTX 3060 with a Ryzen 5 5600X (run
+/// 2026-11-28 11:31). The layer self-tests the driver heap before the
+/// title's first code and turns it off for the run if that fails.
+pub const IN_PLACE: [(&str, &str); 3] = [("VICTORY_INPLACE", "1"), ("VICTORY_UMA_DRIVER", "1"), ("VICTORY_UMA_DIRECT", "1")];
+
 /// The layer's own switches that ToLIManl/VIctory-Hydra's launcher
 /// (`Play-VIctory.cmd`, GPL-3.0-or-later) turns on and Mandy's base launcher
 /// does not, at its values: its measured set on an RTX 3060 12 GB with a
@@ -186,7 +197,7 @@ pub fn plan(asked: Graphics, hw: &Hardware) -> Plan {
     args.extend(["-Dlss".into(), dlss.into()]);
     args.push("-PreloadShaders".into());
     args.push("-FrameGen".into());
-    let mut set: Vec<(String, String)> = HYDRA_SET.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect();
+    let mut set: Vec<(String, String)> = HYDRA_SET.iter().chain(IN_PLACE.iter()).map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect();
     let mut unset = Vec::new();
     if hw.threads > 0 && hw.threads <= 12 {
         set.extend(crate::settings::SIX_CORES.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())));
@@ -238,6 +249,7 @@ mod tests {
         assert!(!p.args.contains(&"-NoFrameGenReady".to_owned()));
         assert!(p.set.iter().any(|(k, v)| k == "VICTORY_THIN_THREADS" && v == "4"));
         assert!(p.set.iter().any(|(k, v)| k == "VICTORY_CARD_BUFFERS_MB" && v == "1536"));
+        assert!(p.set.iter().any(|(k, v)| k == "VICTORY_INPLACE" && v == "1"), "never 2: late wait rules it out");
         // Each switch once.
         let mut names: Vec<&String> = p.set.iter().map(|(k, _)| k).collect();
         names.sort();
