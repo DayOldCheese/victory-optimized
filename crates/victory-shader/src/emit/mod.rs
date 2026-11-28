@@ -394,7 +394,7 @@ fn parse_shader_opt(value: Option<&str>) -> u32 {
             Some(hex) => u32::from_str_radix(hex, 16).ok(),
             None => v.parse().ok(),
         });
-    parsed.map_or(bitcode::opt::DEFAULT, |n| n & bitcode::opt::ALL)
+    parsed.map_or(bitcode::opt::DEFAULT, |n| n & bitcode::opt::KNOWN)
 }
 
 /// `VICTORY_SHADER_LOOP_LIMIT`'s value; the default when it is unset,
@@ -1415,14 +1415,16 @@ mod tests {
 
     #[test]
     fn the_clean_up_switch_parses_or_runs_every_pass() {
-        let (all, usual) = (super::bitcode::opt::ALL, super::bitcode::opt::DEFAULT);
-        assert_eq!(usual, 63, "the passes of the builds before the wide loads");
+        let (all, usual, known) = (super::bitcode::opt::ALL, super::bitcode::opt::DEFAULT, super::bitcode::opt::KNOWN);
+        assert_eq!(usual, 63 | 128, "the passes of the builds before the wide loads, and fast-math flags");
         assert_eq!(parse_shader_opt(None), usual);
         assert_eq!(parse_shader_opt(Some("0")), 0);
         assert_eq!(parse_shader_opt(Some(" 1 ")), 1);
         assert_eq!(parse_shader_opt(Some("0x1")), 1);
+        assert_eq!(parse_shader_opt(Some("63")), 63, "the passes without the fast-math flags");
         assert_eq!(parse_shader_opt(Some("127")), all);
-        assert_eq!(parse_shader_opt(Some("0xffffffff")), all);
+        assert_eq!(parse_shader_opt(Some("191")), usual);
+        assert_eq!(parse_shader_opt(Some("0xffffffff")), known);
         assert_eq!(parse_shader_opt(Some("on")), usual);
     }
 

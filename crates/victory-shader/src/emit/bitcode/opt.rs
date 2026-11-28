@@ -60,14 +60,26 @@ pub const FIRST: u32 = 32;
 /// the yard's frame replayed turn by turn, dispatches and draws 18.47 -> 18.45
 /// ms (12 loops) and 18.23 -> 18.16 (5 loops): the driver joins the loads.
 pub const WIDE: u32 = 64;
+/// Not a pass either: the 32-bit float binary operations carry LLVM's
+/// fast-math flags `VICTORY_SHADER_FAST_BITS` picks (`bitcode.rs`,
+/// `fast_math_bits`; unset, no signed zeros and allow reciprocal: NaN and
+/// infinity tests stay as they are), so that the driver's compiler may use a
+/// reciprocal and a multiply for a division and leave out signed-zero
+/// handling. Not exact in the last bits of such results; the console's own
+/// code divides by a reciprocal and a multiply already. After
+/// ToLIManl/VIctory-Hydra (GPL-3.0-or-later), on in its measured set
+/// (`VICTORY_SHADER_OPT=191`).
+pub const FAST: u32 = 128;
 /// The passes over the module.
 pub const MODULE: u32 = DEAD | FOLD | REUSE | FACTS | LOADS;
 /// Every pass.
 pub const ALL: u32 = MODULE | FIRST | WIDE;
+/// Every bit the switch takes.
+pub const KNOWN: u32 = ALL | FAST;
 /// The passes that run when nothing says which: every one but [`WIDE`],
 /// which no card has shown a gain for yet (`VICTORY_SHADER_OPT=127` asks
-/// for it).
-pub const DEFAULT: u32 = ALL & !WIDE;
+/// for it), and [`FAST`] (`VICTORY_SHADER_OPT=63`: without it).
+pub const DEFAULT: u32 = (ALL & !WIDE) | FAST;
 
 /// What the instructions a module writes use, of the features a shader
 /// declares by flag (the validator's "flags must match usage").
