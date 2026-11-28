@@ -30,15 +30,49 @@ const PER: u32 = 512;
 const BLOCKS: u32 = 512;
 
 pub(crate) fn on() -> bool {
-    static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| {
-        let on = std::env::var_os("VICTORY_CARD_PROFILE").is_some_and(|v| v == "1");
-        if on {
-            tracing::info!("the card's time is summed by the title's pipelines (VICTORY_CARD_PROFILE=1)");
+    mode() != 0
+}
+
+/// `VICTORY_CARD_PROFILE`: 0 off; 1 a stamp where a list's pipeline changes;
+/// 2 a stamp right before and right after each draw, dispatch and indirect
+/// execution, so the card's time splits into the title's work (charged to
+/// the pipeline) and what lies between draws ([`BETWEEN`]: the layer's state
+/// changes, barriers, bindings and copies at their place, and the title's own
+/// barriers). Run 2026-11-28 17:12 (RTX 3060): 97 ms of the card a world
+/// frame over about 2,900 pipeline changes, about 16-20 us each whatever the
+/// program, which looks like a cost per draw rather than per shader.
+pub(crate) fn mode() -> u8 {
+    static MODE: OnceLock<u8> = OnceLock::new();
+    *MODE.get_or_init(|| {
+        let mode = match std::env::var("VICTORY_CARD_PROFILE").as_deref().map(str::trim) {
+            Ok("1") => 1,
+            Ok("2") => 2,
+            _ => 0,
+        };
+        if mode != 0 {
+            tracing::info!(mode, "the card's time is summed by the title's pipelines (VICTORY_CARD_PROFILE)");
         }
-        on
+        mode
     })
 }
+
+/// The key of the time between one draw's end and the next one's start
+/// (`VICTORY_CARD_PROFILE=2`).
+pub(crate) const BETWEEN: u64 = 1;
+const BETWEEN_NAME: &str = "[between draws: state changes, barriers, bindings]";
+
+/// Names `key` without a stamp (mode 2 names pipelines where they are set).
+pub(crate) fn name(key: u64, name: &str) {
+    let mut guard = RING.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(ring) = guard.as_mut() {
+        ring.names.entry(key).or_insert_with(|| name.to_owned());
+    } else {
+        PENDING_NAMES.lock().unwrap_or_else(|e| e.into_inner()).push((key, name.to_owned()));
+    }
+}
+
+/// Names given before the ring was made.
+static PENDING_NAMES: Mutex<Vec<(u64, String)>> = Mutex::new(Vec::new());
 
 /// A list's open block: its index, and the pipeline of each interval begun.
 #[derive(Default)]
@@ -172,9 +206,17 @@ pub(crate) fn mark(device: &ID3D12Device, list: &ID3D12GraphicsCommandList, open
     let mut guard = RING.lock().unwrap_or_else(|e| e.into_inner());
     if guard.is_none() {
         *guard = make(device);
+        if let Some(ring) = guard.as_mut() {
+            ring.names.insert(BETWEEN, BETWEEN_NAME.to_owned());
+            for (k, n) in PENDING_NAMES.lock().unwrap_or_else(|e| e.into_inner()).drain(..) {
+                ring.names.entry(k).or_insert(n);
+            }
+        }
     }
     let Some(ring) = guard.as_mut() else { return };
-    ring.names.entry(key).or_insert_with(|| name.to_owned());
+    if !name.is_empty() {
+        ring.names.entry(key).or_insert_with(|| name.to_owned());
+    }
     if let Some(b) = open.block
         && open.keys.len() as u32 + 1 >= PER
     {

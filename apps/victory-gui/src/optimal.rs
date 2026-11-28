@@ -246,7 +246,11 @@ pub fn plan(asked: Graphics, hw: &Hardware) -> Plan {
     // Where the card's time goes, by the title's pipelines (two timestamps
     // where a list's pipeline changes): the title's work took 94 ms of the
     // card in a 112 ms world frame on an RTX 3060 (run 2026-11-28 14:32).
-    set.push(("VICTORY_CARD_PROFILE".into(), "1".into()));
+    // Mode 2: a stamp right before and after each draw, so the card's time
+    // splits into the title's programs and what lies between draws (97 ms a
+    // world frame, about 16-20 us per pipeline change whatever the program:
+    // run 2026-11-28 17:12).
+    set.push(("VICTORY_CARD_PROFILE".into(), "2".into()));
     // A pipeline sync whose global UAV barrier orders nothing (nothing since
     // the last one stored) is left out: the card no longer drains for it.
     set.push(("VICTORY_SYNC_QUIET".into(), "1".into()));
@@ -267,8 +271,16 @@ pub fn plan(asked: Graphics, hw: &Hardware) -> Plan {
     // declared range read whole by the card's compare once in 60 submissions,
     // its pieces found changed lately between.
     set.push(("VICTORY_CARD_COMPARE_EVERY".into(), "60".into()));
-    // (VICTORY_MESH_LANES and VICTORY_SHADER_LOOP_LIMIT, both of the
-    // translator, are not set here until a run of their own has measured them.)
+    // Two translator changes on trial (one preload for both): mesh programs
+    // declare no more vertices and primitives than they have lanes (slots
+    // past the lanes are never written, yet each is culled and reserved in
+    // every group of every draw: mesh held the card 40 ms a world frame), and
+    // translated loops are left after 16,384 rounds, not 1,048,576 (a loop
+    // fed zeros by a view not mirrored yet runs to the limit in every lane;
+    // if a compute program's time falls, that is what held it). The profile
+    // against run 2026-11-28 17:12's tells which programs changed.
+    set.push(("VICTORY_MESH_LANES".into(), "1".into()));
+    set.push(("VICTORY_SHADER_LOOP_LIMIT".into(), "16384".into()));
     //
     // The title engine's own quality settings, as ToLIManl/VIctory-Hydra's
     // Stage 14 "Max-FPS" preset sets them (`victory-loader`'s `engine`): the

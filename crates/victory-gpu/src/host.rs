@@ -7427,6 +7427,7 @@ impl HostList {
                 let before = std::mem::replace(&mut o.get_mut().1, wanted);
                 if before != wanted {
                     self.changed_something();
+                    crate::list::BARRIERS[5].fetch_add(1, Ordering::Relaxed);
                 }
                 (before != wanted).then_some((texture, before))
             }
@@ -7898,12 +7899,28 @@ impl HostList {
     /// The host pipeline `pso` (the title's `name`) is set from here on
     /// (`card_profile`).
     pub(crate) fn profile_mark(&self, name: &str, pso: &ID3D12PipelineState) {
-        if !card_profile::on() {
+        match card_profile::mode() {
+            1 => {
+                let Some(host) = host() else { return };
+                let mut open = self.profile.lock().unwrap_or_else(|e| e.into_inner());
+                card_profile::mark(&host.device, &self.list, &mut open, pso.as_raw() as u64, name);
+            }
+            2 => card_profile::name(pso.as_raw() as u64, name),
+            _ => {}
+        }
+    }
+
+    /// `VICTORY_CARD_PROFILE=2`: right before a draw, dispatch or indirect
+    /// execution with the host pipeline `pso` (its raw pointer), and with 0
+    /// right after it (the time to the next one is [`card_profile::BETWEEN`]).
+    pub(crate) fn profile_draw(&self, pso: usize) {
+        if card_profile::mode() != 2 {
             return;
         }
         let Some(host) = host() else { return };
+        let key = if pso == 0 { card_profile::BETWEEN } else { pso as u64 };
         let mut open = self.profile.lock().unwrap_or_else(|e| e.into_inner());
-        card_profile::mark(&host.device, &self.list, &mut open, pso.as_raw() as u64, name);
+        card_profile::mark(&host.device, &self.list, &mut open, key, "");
     }
 
     pub(crate) fn bind_pipeline(&self, name: &str, pso: &ID3D12PipelineState, root: &ID3D12RootSignature) {
@@ -10176,6 +10193,16 @@ impl Meter {
                     lean::lean_line(frames);
                 }
                 let [kept, left] = [0, 1].map(|i| crate::list::SYNCS[i].swap(0, Ordering::Relaxed) as f64 / frames);
+                let b: Vec<f64> = crate::list::BARRIERS.iter().map(|n| n.swap(0, Ordering::Relaxed) as f64 / frames).collect();
+                tracing::info!(
+                    "barriers per frame: the title's enhanced barrier calls {:.0} ({:.0} ordering nothing, {:.0} the global UAV barrier,                      {:.0} UAV barriers on their textures), its legacy barrier calls {:.0}; texture state changes the layer records in                      its lists {:.0}",
+                    b[0],
+                    b[1],
+                    b[2],
+                    b[3],
+                    b[4],
+                    b[5]
+                );
                 tracing::info!(
                     "the title's pipeline syncs per frame: {kept:.0} with a global UAV barrier, {left:.0} left out as nothing \
                      since the last one stored (VICTORY_SYNC_QUIET)"

@@ -899,6 +899,7 @@ const UAV_BARRIER: Barrier = Barrier {
 
 /// Returns the console's barrier "actions" (none).
 extern "system" fn barrier(this: This, count: u32, barriers: *const Barrier) -> u32 {
+    BARRIERS[4].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     #[cfg(windows)]
     if let Some(list) = host_list(this)
         && !barriers.is_null()
@@ -1690,6 +1691,15 @@ fn mark_wrote(this: This) {
     let _ = this;
 }
 
+/// The title's barriers and what became of them, per frame line: its enhanced
+/// barrier calls, those that order nothing, those that became the global UAV
+/// barrier, those that became UAV barriers on their textures; its legacy
+/// barrier calls; and the texture state changes the layer records in its
+/// lists (`HostList::transition`). Each recorded barrier may drain the card:
+/// it stood 100% busy in world frames at about 16-20 us per pipeline change
+/// (run 2026-11-28 17:12).
+pub(crate) static BARRIERS: [std::sync::atomic::AtomicU64; 6] = [const { std::sync::atomic::AtomicU64::new(0) }; 6];
+
 /// Pipeline syncs per frame line: with their global UAV barrier, and left out
 /// as nothing since the last one stored (`crate::draw::State::sync_needed`).
 pub(crate) static SYNCS: [std::sync::atomic::AtomicU64; 2] = [const { std::sync::atomic::AtomicU64::new(0) }; 2];
@@ -2459,6 +2469,15 @@ impl EnhancedAction {
 }
 
 pub(super) fn classify_barrier_groups(count: u32, groups: *const u8) -> EnhancedAction {
+    let action = classify_barrier_groups_now(count, groups);
+    BARRIERS[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if action.is_noop() {
+        BARRIERS[1].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    action
+}
+
+fn classify_barrier_groups_now(count: u32, groups: *const u8) -> EnhancedAction {
     let mut action = EnhancedAction::empty();
     if count == 0 {
         return action;
@@ -2572,6 +2591,7 @@ pub(super) fn apply_enhanced_action(this: This, action: &EnhancedAction) {
         use windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_BARRIER;
         use windows::core::Interface;
         if action.global_uav {
+            BARRIERS[2].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             #[cfg(feature = "diagnostics")]
             crate::copystat::add(crate::copystat::C::WaitsForGroups, 1);
             with_state(this, |_, state| state.synced());
@@ -2608,6 +2628,7 @@ pub(super) fn apply_enhanced_action(this: This, action: &EnhancedAction) {
                 }
             }
             if n > 0 {
+                BARRIERS[3].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 with_state(this, |_, state| state.synced());
                 // SAFETY: same layout as `D3D12_RESOURCE_BARRIER`; borrowed live pointers.
                 let slice = unsafe {

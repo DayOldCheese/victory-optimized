@@ -3832,7 +3832,10 @@ impl State {
             }
         }
         // SAFETY: an open list with everything set.
+        list.profile_draw(self.host_pipeline);
+        // SAFETY: as above.
         unsafe { list.list.Dispatch(x, y, z) };
+        list.profile_draw(0);
         if crate::host::card_profile::on() {
             crate::host::card_profile::dispatched(self.host_pipeline as u64, u64::from(x) * u64::from(y) * u64::from(z));
         }
@@ -4432,7 +4435,10 @@ impl State {
                         once!(x, "a mesh dispatch of more groups than the host takes: cut");
                     }
                     // SAFETY: an open list with everything set.
+                    list.profile_draw(self.host_pipeline);
+                    // SAFETY: as above.
                     unsafe { l6.DispatchMesh(x.min(65_535), 1, 1) };
+                    list.profile_draw(0);
                     self.drew(crate::pipeline::host_pipeline(self.pipeline as This));
                     self.mesh_scissor(list, false);
                     DRAWN.fetch_add(1, Ordering::Relaxed);
@@ -4912,10 +4918,13 @@ impl State {
                 viewports(list, &[viewport]);
             }
             // SAFETY: an open list with everything set.
+            list.profile_draw(self.host_pipeline);
+            // SAFETY: as above.
             unsafe {
                 list.list
                     .DrawInstanced(count, instances, from, first_instance)
             };
+            list.profile_draw(0);
             if frontend.is_some() {
                 viewports(list, &self.viewports);
             }
@@ -5098,10 +5107,13 @@ impl State {
             #[cfg(feature = "diagnostics")]
             list.note_op(|| self.op_text(format!("indexed {indices}x{instances}"), false));
             // SAFETY: an open list with everything set.
+            list.profile_draw(self.host_pipeline);
+            // SAFETY: as above.
             unsafe {
                 list.list
                     .DrawIndexedInstanced(indices, instances, first, base, first_instance)
             };
+            list.profile_draw(0);
             self.drew(crate::pipeline::host_pipeline(self.pipeline as This));
             DRAWN.fetch_add(1, Ordering::Relaxed);
         }
@@ -5470,6 +5482,7 @@ impl State {
                 if kind == MESH {
                     self.mesh_scissor(list, true);
                 }
+                list.profile_draw(self.host_pipeline);
                 // SAFETY: an open list with everything set; the scratch buffer and
                 // host copies are kept alive by the list, and the signature is cached.
                 unsafe {
@@ -5482,6 +5495,7 @@ impl State {
                         counter.as_ref().map_or(0, |(s, at)| s.offset(*at)),
                     )
                 };
+                list.profile_draw(0);
                 if kind == MESH {
                     self.mesh_scissor(list, false);
                 }
