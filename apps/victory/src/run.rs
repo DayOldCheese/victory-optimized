@@ -353,6 +353,16 @@ pub fn run(
             None => println!("frame rate: our clock {ms} ms; the title's own rate (30) left as it is"),
         }
     }
+    // The title engine's own quality settings (VICTORY_LOW_SHADOWS,
+    // VICTORY_LOW_VOLUMETRIC, VICTORY_LOD_SCALE, VICTORY_SMALL_CULL,
+    // VICTORY_VEHICLE_LOD_BIAS; each off without it), from VIctory-Hydra: each
+    // site compared byte for byte before it is written.
+    #[cfg(windows)]
+    if execute {
+        let size = image.info().size_of_image as usize;
+        // SAFETY: the image stays mapped and nothing of it has run yet.
+        unsafe { victory_loader::engine::apply_asked(image.base(), size) };
+    }
     if !execute {
         println!("not executing (pass --execute to start the title)");
         return Ok(());

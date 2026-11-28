@@ -225,6 +225,10 @@ fn translate(container: &[u8]) -> Result<Translated, String> {
         .map(|p| {
             let cs = match &p.io {
                 victory_shader::native::StageIo::Cs(cs) => format!(" threads {:?} lds {}", cs.threads, cs.lds_bytes()),
+                victory_shader::native::StageIo::Ms(ms) => format!(
+                    " threads {} max vertices {} primitives {} lds {}",
+                    ms.threads, ms.max_vertices, ms.max_primitives, ms.lds_bytes
+                ),
                 _ => String::new(),
             };
             format!("{:?} wave{} vgprs {} code {}{cs}", p.stage, if p.wave64 { 64 } else { 32 }, p.vgprs, p.code.len())

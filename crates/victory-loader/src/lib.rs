@@ -24,7 +24,12 @@
 #[cfg(windows)]
 mod console_insn;
 mod crash;
+/// The title engine's own quality settings (shadow size, level of detail,
+/// small-object culling), from ToLIManl/VIctory-Hydra (GPL-3.0-or-later).
+pub mod engine;
 pub mod frame_rate;
+/// Byte-verified changes of the title's image, from ToLIManl/VIctory-Hydra.
+pub mod patch;
 pub mod prepare;
 pub(crate) mod publish;
 pub mod resolve;

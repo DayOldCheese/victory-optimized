@@ -70,6 +70,8 @@ fn build() -> [u8; 32] {
             "VICTORY_WAVE_OWN_BITS",
             "VICTORY_WAVE_LOCAL",
             "VICTORY_WAVE_LOCAL_FIRST",
+            "VICTORY_MESH_LANES",
+            "VICTORY_SHADER_LOOP_LIMIT",
             "VICTORY_F16_NEAREST",
             "VICTORY_FILTER_3D",
             "VICTORY_HELPER_OWN",

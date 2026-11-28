@@ -5269,6 +5269,17 @@ impl<'a> Lower<'a> {
         let fits = |m: super::shader::Mesh| {
             mesh_output_bytes(outputs, prims, m.max_vertices, m.max_primitives) <= MESH_OUTPUT_LIMIT
         };
+        // `VICTORY_MESH_LANES=1`: the maxima come down to the lane count
+        // always, not only when the outputs do not fit: slots past the lanes
+        // are never written, and every declared primitive is culled first
+        // and its vertices reserved, in every group of every draw (the mesh
+        // programs held an RTX 3060 47 ms a world frame, run 2026-11-28 15:54).
+        let lanes = std::env::var_os("VICTORY_MESH_LANES").is_some_and(|v| v == "1");
+        if lanes && (mesh.max_vertices > threads || mesh.max_primitives > threads) {
+            mesh.max_vertices = mesh.max_vertices.min(threads);
+            mesh.max_primitives = mesh.max_primitives.min(threads);
+            self.s.mesh = Some(mesh);
+        }
         if !fits(mesh) {
             mesh.max_vertices = mesh.max_vertices.min(threads);
             mesh.max_primitives = mesh.max_primitives.min(threads);

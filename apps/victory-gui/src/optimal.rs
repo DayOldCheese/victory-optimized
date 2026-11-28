@@ -256,6 +256,30 @@ pub fn plan(asked: Graphics, hw: &Hardware) -> Plan {
     // run 2026-11-28 15:33). A change of the translator: the next start
     // translates every shader again (the preload).
     set.push(("VICTORY_WAVE_LOCAL_FIRST".into(), "1".into()));
+    // (VICTORY_MESH_LANES and VICTORY_SHADER_LOOP_LIMIT, both of the
+    // translator, are not set here until a run of their own has measured them.)
+    //
+    // The title engine's own quality settings, as ToLIManl/VIctory-Hydra's
+    // Stage 14 "Max-FPS" preset sets them (`victory-loader`'s `engine`): the
+    // shadow atlas at 1024, the volumetric map at 128, level of detail at
+    // half the Series S distance, small far objects culled sooner, vehicles'
+    // detail a step and a half down. Measured there on this app's reference
+    // PC (RTX 3060 12 GB, Ryzen 5 5600X, Series S, 1080p, no frame
+    // generation): 21.67 fps in the median, 2,369 draws a world frame, where
+    // Mandy without them made about 9 at 8,000 (2026-11-28). Performance
+    // only: Quality and Ultra keep the title's own.
+    let engine = [
+        ("VICTORY_LOW_SHADOWS", "1024"),
+        ("VICTORY_LOW_VOLUMETRIC", "1"),
+        ("VICTORY_LOD_SCALE", "0.25"),
+        ("VICTORY_SMALL_CULL", "3.5"),
+        ("VICTORY_VEHICLE_LOD_BIAS", "1.5"),
+    ];
+    if graphics == Graphics::Performance {
+        set.extend(engine.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())));
+    } else {
+        unset.extend(engine.iter().map(|(k, _)| (*k).to_owned()));
+    }
     if graphics == Graphics::Ultra {
         set.push((RAY_TRACING.into(), "1".into()));
     } else {
@@ -330,6 +354,12 @@ VICTORY_FULLSCREEN=1
         names.dedup();
         assert_eq!(names.len(), p.set.len());
         assert!(p.unset.contains(&RAY_TRACING.to_owned()));
+        // The engine's own settings: on for Performance, the title's own above it.
+        assert_eq!(get("VICTORY_LOD_SCALE"), Some("0.25"));
+        assert_eq!(get("VICTORY_LOW_SHADOWS"), Some("1024"));
+        let quality = plan(Graphics::Quality, &pc("NVIDIA GeForce RTX 4090", 24.0, 32));
+        assert!(!quality.set.iter().any(|(k, _)| k == "VICTORY_LOD_SCALE"));
+        assert!(quality.unset.iter().any(|k| k == "VICTORY_LOD_SCALE"));
     }
 
     #[test]
