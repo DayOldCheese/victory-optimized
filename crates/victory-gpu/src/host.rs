@@ -4388,6 +4388,7 @@ fn late_line(frames: f64) {
 pub(crate) mod aside;
 pub(crate) mod awake;
 mod card_steps;
+mod card_time;
 #[cfg(feature = "diagnostics")]
 pub(crate) mod indirects;
 mod font;
@@ -5026,6 +5027,7 @@ impl Host {
                 (|| -> windows::core::Result<()> {
                     allocator.Reset()?;
                     list.Reset(allocator, None)?;
+                    let stamp = card_time::begin(&self.device, list, card_time::SEND);
                     if upcheck::on() {
                         looks = upcheck::record(self, list, &dirty);
                     }
@@ -5104,6 +5106,7 @@ impl Host {
                             card_pass(list, &run, size as u32, 0, 0);
                         }
                     }
+                    card_time::end(list, stamp);
                     list.Close()?;
                     self.queue.ExecuteCommandLists(&[Some(list.cast()?)]);
                     Ok(())
@@ -5186,6 +5189,7 @@ impl Host {
                 (|| -> windows::core::Result<ID3D12CommandList> {
                     allocator.Reset()?;
                     list.Reset(allocator, None)?;
+                    let stamp = card_time::begin(&self.device, list, card_time::COMPARE);
                     // What the submission's shaders wrote, first.
                     list.ResourceBarrier(&[D3D12_RESOURCE_BARRIER {
                         Type: D3D12_RESOURCE_BARRIER_TYPE_UAV,
@@ -5210,6 +5214,7 @@ impl Host {
                         card_pass(list, &r.span, size as u32, r.at, if flown && !r.picked { 2 } else { 1 });
                         CARD_PASSES[2].fetch_add(1, Ordering::Relaxed);
                     }
+                    card_time::end(list, stamp);
                     list.Close()?;
                     list.cast()
                 })()
@@ -10019,6 +10024,14 @@ impl Meter {
         {
             let [passes, pieces, compares] = [0, 1, 2].map(|i| CARD_PASSES[i].swap(0, Ordering::Relaxed) as f64 / frames);
             let wc_left = crate::shadow::WC_LEFT.swap(0, Ordering::Relaxed) as f64 / 1e6 / frames;
+            if let Some(host) = host()
+                && let Some([(send_ms, sends), (compare_ms, checks)]) =
+                    card_time::per_frame(frames, unsafe { host.queue.GetTimestampFrequency() }.unwrap_or(1))
+            {
+                tracing::info!(
+                    "our lists of the copies in the card's memory, on the card per frame (VICTORY_CARD_TIME): sends and hashes                      {send_ms:.2} ms in {sends:.1} lists, compares {compare_ms:.2} ms in {checks:.1} lists"
+                );
+            }
             if passes + compares + wc_left > 0.0 {
                 tracing::info!(
                     "our passes over copies in the card's memory per frame: {passes:.0} hash passes over {pieces:.0} pieces after \
